@@ -524,11 +524,11 @@ function buildShell() {
       <div class="top">
         <div><h1 id="v-title"></h1><div class="sub" id="v-sub"></div></div><div class="grow"></div>
         
-        <button class="btn" data-act="report" title="Daily report for WhatsApp">${icon('report')}Daily report</button>
+        <div class="tbtns"><button class="btn rep-btn" data-act="report" title="Daily report for WhatsApp" aria-label="Daily report">${icon('report')}</button>
         
         <button class="btn" data-act="upd-pick">${icon('edit')}Update</button>
         <button class="btn" data-act="team-new">${icon('users')}Add team</button>
-        <button class="btn primary" data-act="task-new">${icon('plus')}New task</button>
+        <button class="btn primary" data-act="task-new">${icon('plus')}New task</button></div>
         <button class="btn refresh-btn" data-act="refresh" title="Refresh" aria-label="Refresh">${icon('refresh')}<span class="rdot" id="rdot"></span></button>
       </div>
       <div id="net-banner" class="banner net" hidden></div>

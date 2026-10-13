@@ -383,3 +383,16 @@ tbody tr:hover td.c1,tbody tr:hover td.c2{background:var(--surface2)}
 .prof-head{display:flex;gap:14px;align-items:center;margin-bottom:14px}
 .prof-head h3{font-size:20px;margin:0}
 .avatar.big{width:56px;height:56px;font-size:20px;background:var(--side)}
+
+/* top bar: report icon + Update, Add team, New task on one line */
+.tbtns{display:flex;gap:10px;flex-wrap:nowrap;align-items:center}
+.tbtns .btn{flex:0 0 auto}
+.tbtns .rep-btn{width:46px;padding:0}
+@media (max-width:980px){
+  .top{padding-right:0}
+  .top>div:first-child{flex:1 1 100%;padding-right:52px}
+  .tbtns{width:100%;gap:8px}
+  .tbtns .btn{flex:1 1 auto;padding:8px 6px;font-size:14px}
+  .tbtns .rep-btn{flex:0 0 46px}
+}
+@media (max-width:560px){.tbtns .btn:not(.rep-btn) svg{display:none}}
