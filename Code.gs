@@ -22,7 +22,7 @@ const SCHEMA = {
   Teams: ['id', 'name', 'supervisor', 'lead', 'members', 'order'],
   Tasks: ['id', 'teamId', 'title', 'description', 'drawing', 'responsibles', 'daysRequired',
           'startDate', 'endDate', 'actualEnd', 'status', 'progress', 'priority', 'remarks',
-          'attachments', 'createdAt', 'updatedAt', 'updatedBy'],
+          'attachments', 'createdAt', 'updatedAt', 'updatedBy', 'deletedAt', 'deletedBy'],
   Updates: ['id', 'date', 'taskId', 'taskTitle', 'user', 'note', 'status', 'progress', 'attachments', 'timestamp'],
   Users: ['id', 'name', 'firstSeen', 'lastSeen', 'visits', 'device']
 };
@@ -58,11 +58,17 @@ function doGet(e) {
       ok: true,
       teams: readAll_('Teams'),
       tasks: readAll_('Tasks'),
-      updates: readAll_('Updates').slice(-2000)
+      updates: recentUpdates_(readAll_('Updates'))
     });
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message || err) });
   }
+}
+
+/** Only the last 30 days of daily updates are sent to the app (keeps it fast). */
+function recentUpdates_(rows) {
+  const cutoff = Utilities.formatDate(new Date(Date.now() - 30 * 864e5), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return rows.filter(function (u) { return String(u.date || String(u.timestamp).slice(0, 10)) >= cutoff; });
 }
 
 function doPost(e) {
@@ -77,7 +83,8 @@ function doPost(e) {
     const user = String(req.user || '').slice(0, 60);
     switch (req.action) {
       case 'saveTask':    return json_(saveTask_(d, user));
-      case 'deleteTask':  return json_(deleteTask_(d.id));
+      case 'deleteTask':  return json_(deleteTask_(d.id, user));
+      case 'restoreTask': return json_(restoreTask_(d.id, user));
       case 'saveTeam':    return json_(saveTeam_(d));
       case 'deleteTeam':  return json_(deleteTeam_(d.id));
       case 'addUpdate':   return json_(addUpdate_(d, user));
@@ -120,16 +127,16 @@ function saveTask_(t, user) {
   return { ok: true, task: outTask_(task) };
 }
 
-function deleteTask_(id) {
-  deleteRow_('Tasks', id);
-  const sh = sheet_('Updates');
-  const last = sh.getLastRow();
-  if (last > 1) {
-    const col = SCHEMA.Updates.indexOf('taskId') + 1;
-    const ids = sh.getRange(2, col, last - 1, 1).getValues();
-    for (let i = ids.length - 1; i >= 0; i--) if (String(ids[i][0]) === String(id)) sh.deleteRow(i + 2);
-  }
-  return { ok: true };
+/** Deleting only moves a task to the app's "Deleted tasks" list (Profile tab): the row stays in the sheet and can be restored. */
+function deleteTask_(id, user) { setDeleted_(id, user, true); return { ok: true }; }
+function restoreTask_(id, user) { setDeleted_(id, user, false); return { ok: true }; }
+function setDeleted_(id, user, on) {
+  const t = findById_('Tasks', id);
+  if (!t) return;
+  t.attachments = JSON.stringify(Array.isArray(t.attachments) ? t.attachments : []);
+  t.deletedAt = on ? new Date().toISOString() : '';
+  t.deletedBy = on ? user : '';
+  upsert_('Tasks', t);
 }
 
 function saveTeam_(t) {

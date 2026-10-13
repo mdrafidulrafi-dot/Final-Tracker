@@ -127,7 +127,7 @@ const state = {
   teams: [], tasks: [], updates: [],
   view: 'dashboard', loading: true, lastSync: null,
   filters: { q: '', team: '', status: '', overdue: false },
-  range: loadRange(),
+  range: loadRange(), rangeOpen: false, bin: [],
   sort: { key: 'startDate', dir: 1 }
 };
 const auth = { user: '', pw: '' };
@@ -219,14 +219,14 @@ function demoCall(action, data) {
       const url = 'data:' + data.mime + ';base64,' + data.base64;
       return { ok: true, file: { id: uid('F'), name: data.name, mime: data.mime, size: Math.round(data.base64.length * 0.75), url } };
     }
-    case 'bulkImport': case 'registerUser': return { ok: true };
+    case 'bulkImport': case 'registerUser': case 'restoreTask': return { ok: true };
   }
   return { ok: false, error: 'Unknown action' };
 }
 
 /* ---------- offline support: local copy of the data + a queue of changes made while offline ---------- */
 const QKEY = 'mmt_queue_v1', CKEY = 'mmt_cache_v1';
-const QUEUEABLE = { saveTask: 1, deleteTask: 1, saveTeam: 1, deleteTeam: 1, addUpdate: 1, editUpdate: 1 };
+const QUEUEABLE = { saveTask: 1, deleteTask: 1, restoreTask: 1, saveTeam: 1, deleteTeam: 1, addUpdate: 1, editUpdate: 1 };
 let queue = [];
 try { queue = JSON.parse(localStorage.getItem(QKEY)) || []; if (!Array.isArray(queue)) queue = []; } catch (e) { queue = []; }
 const writeQueue = () => { try { localStorage.setItem(QKEY, JSON.stringify(queue)); } catch (e) { toast('Phone storage is full — free some space so offline changes can be kept.', 'err'); } };
@@ -235,12 +235,13 @@ const isNetErr = e => !!e && (e.name === 'AbortError' || e instanceof TypeError 
 
 function applyData(d) {
   state.teams = (d.teams || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
-  state.tasks = (d.tasks || []).map(t => Object.assign({}, t, { status: normStatus(t.status), attachments: Array.isArray(t.attachments) ? t.attachments : [] }));
+  const allT = (d.tasks || []).map(t => Object.assign({}, t, { status: normStatus(t.status), attachments: Array.isArray(t.attachments) ? t.attachments : [] }));
+  state.tasks = allT.filter(t => !t.deletedAt); state.bin = allT.filter(t => t.deletedAt);
   state.updates = (d.updates || []).map(u => Object.assign({}, u, { status: normStatus(u.status), attachments: Array.isArray(u.attachments) ? u.attachments : [] }));
 }
 function saveCache() {
   if (DEMO) return;
-  const snap = n => JSON.stringify({ teams: state.teams, tasks: state.tasks, updates: state.updates.slice(-n), at: Date.now() });
+  const snap = n => JSON.stringify({ teams: state.teams, tasks: state.tasks.concat(state.bin), updates: state.updates.slice(-n), at: Date.now() });
   try { localStorage.setItem(CKEY, snap(5000)); }
   catch (e) { try { localStorage.setItem(CKEY, snap(300)); } catch (x) {} }
 }
@@ -296,7 +297,7 @@ function localApply(action, data) {
     case 'saveTask':
       if (!String(data.title || '').trim()) throw new Error('Task title is required');
       return { ok: true, task: norm(data, taskById(data.id)) };
-    case 'deleteTask': return { ok: true };
+    case 'deleteTask': case 'restoreTask': return { ok: true };
     case 'saveTeam':
       if (!String(data.name || '').trim()) throw new Error('Team name is required');
       return { ok: true, team: Object.assign({}, data, { order: Number(data.order) || 0 }) };
@@ -379,6 +380,7 @@ function setSync(s) {
   if (!d) return;
   const n = queue.length, off = s === 'off' || isOffline();
   d.className = 'dot' + (s === 'busy' ? ' busy' : off ? ' off' : n ? ' busy' : '');
+  const rd = $('#rdot'); if (rd) rd.className = d.className.replace(/^dot/, 'rdot');
   if (s === 'busy') l.textContent = 'Saving…';
   else if (off) l.textContent = 'Offline' + (n ? ' · ' + n + ' pending' : '');
   else if (n) l.textContent = n + ' pending sync';
@@ -494,10 +496,12 @@ function start() {
 
 /* =============================== shell / routing =============================== */
 const NAV = [
-  { id: 'dashboard', label: 'Dashboard', icon: 'grid', title: 'Dashboard', sub: 'Overview of all maintenance work' },
-  { id: 'teams', label: 'Teams', icon: 'users', title: 'Teams & work', sub: 'Who is doing what, and how far along' },
-  { id: 'tasks', label: 'All tasks', icon: 'list', title: 'All tasks', sub: 'Sortable list across every team' },
-  { id: 'timeline', label: 'Timeline', icon: 'gantt', title: 'Timeline', sub: 'Planned dates versus today' }
+  { id: 'dashboard', label: 'Dashboard', title: 'Dashboard', sub: 'Overview of all maintenance work' },
+  { id: 'teams', label: 'Teams', title: 'Teams & work', sub: 'Who is doing what, and how far along' },
+  { id: 'tasks', label: 'Tasks', title: 'All tasks', sub: 'Sortable list across every team' },
+  { id: 'update', label: 'Update', act: 'upd-pick', title: 'Update', sub: '' },
+  { id: 'timeline', label: 'Timeline', title: 'Timeline', sub: 'Planned dates versus today' },
+  { id: 'profile', label: 'Profile', title: 'Profile', sub: 'Your name and deleted tasks' }
 ];
 
 function buildShell() {
@@ -505,7 +509,7 @@ function buildShell() {
   <div class="layout">
     <aside class="side">
       <div class="brand"><div class="logo">${icon('gear')}</div><div><b>${esc(CFG.APP_TITLE)}</b><small>${esc(CFG.DEPARTMENT)}</small></div></div>
-      <nav class="nav">${NAV.map(n => `<button data-act="nav" data-v="${n.id}" id="nav-${n.id}">${icon(n.icon)}<span>${n.label}</span></button>`).join('')}</nav>
+      <nav class="nav">${NAV.map(n => `<button data-act="${n.act || 'nav'}" data-v="${n.id}" id="nav-${n.id}"><span>${n.label}</span></button>`).join('')}</nav>
       <div class="side-foot">
         <div class="who" data-act="rename" title="Click to change your name">
           <div class="avatar" id="who-av"></div><div><b id="who-name"></b><small>Signed in</small></div>
@@ -513,18 +517,19 @@ function buildShell() {
         <div class="sync"><span class="dot" id="sync-dot"></span><span id="sync-label">Ready</span></div>
         <div class="side-btns">
           <button data-act="theme" title="Toggle dark mode">${icon('moon')}<span>Theme</span></button>
-          <button data-act="logout" title="Switch user">${icon('logout')}<span>Switch user</span></button>
+          
         </div>
       </div>
     </aside>
     <main class="main">
       <div class="top">
         <div><h1 id="v-title"></h1><div class="sub" id="v-sub"></div></div><div class="grow"></div>
-        <button class="btn" data-act="refresh" title="Reload from sheet">${icon('refresh')}Refresh</button>
+        
         <button class="btn" data-act="report" title="Daily report for WhatsApp">${icon('report')}Daily report</button>
-        <button class="btn" data-act="upd-pick">${icon('edit')}Update</button>
+        
         <button class="btn" data-act="team-new">${icon('users')}Add team</button>
         <button class="btn primary" data-act="task-new">${icon('plus')}New task</button>
+        <button class="btn refresh-btn" data-act="refresh" title="Refresh" aria-label="Refresh">${icon('refresh')}<span class="rdot" id="rdot"></span></button>
       </div>
       <div id="net-banner" class="banner net" hidden></div>
       ${DEMO ? `<div class="banner"><b>Demo mode</b> — data is saved only in this browser. Add your Apps Script URL in <code>config.js</code> to use the Google Sheet.</div>` : ''}
@@ -549,7 +554,8 @@ function setView(v, how) {
 function renderView(keepScroll) {
   const el = $('#view'); if (!el) return;
   const y = window.scrollY;
-  el.innerHTML = rangeBar() + (state.view === 'dashboard' ? '' : filterBar()) + '<div id="vbody"></div>';
+  const bars = state.view === 'profile' ? '' : rangeBar() + (state.view === 'dashboard' ? '' : filterBar());
+  el.innerHTML = bars + '<div id="vbody"></div>';
   renderBody();
   if (keepScroll) window.scrollTo(0, y);
 }
@@ -557,6 +563,7 @@ function renderView(keepScroll) {
 function renderBody() {
   const b = $('#vbody'); if (!b) return;
   if (state.loading) { b.innerHTML = '<div class="empty">Loading…</div>'; return; }
+  if (state.view === 'profile') { viewProfile(b); return; }
   if (!state.teams.length && !state.tasks.length) { b.innerHTML = emptyStart(); return; }
   ({ dashboard: viewDashboard, teams: viewTeams, tasks: viewTable, timeline: viewTimeline })[state.view](b);
 }
@@ -576,14 +583,20 @@ function setRange(r) {
   renderView();
 }
 function rangeBar() {
-  const r = state.range, c = computeRange(r), n = rangeTasks().length;
+  const r = state.range, c = computeRange(r), n = rangeTasks().length, open = !!state.rangeOpen;
   const all = !c.from && !c.to;
+  const label = r.preset === 'ym' ? r.ym : ((RANGE_PRESETS.find(p => p[0] === r.preset) || [])[1] || 'Custom');
   return `<div class="card rbar">
-    <div class="rhead"><b>Filter by start date</b><span class="rinfo">${all ? 'Showing all tasks' : 'Tasks starting <b>' + rangeShort() + '</b>'} · <b>${n}</b> of ${state.tasks.length} tasks</span></div>
-    <div class="rchips">${RANGE_PRESETS.map(([k, label]) => `<button type="button" class="rchip ${r.preset === k ? 'on' : ''}" data-act="range" data-p="${k}">${label}</button>`).join('')}
-      <label class="rmonth">Pick month <input type="month" id="rng-ym" value="${r.preset === 'ym' ? esc(r.ym) : ''}"></label></div>
-    ${r.preset === 'custom' ? `<div class="rcustom"><label class="fld">From<input type="date" id="rng-from" value="${esc(r.from || '')}"></label><label class="fld">To<input type="date" id="rng-to" value="${esc(r.to || '')}"></label></div>` : ''}
-    ${all ? '' : '<div class="rnote">Tasks with no start date are placed by their due date (or the day they were added).</div>'}
+    <button type="button" class="rtoggle" data-act="range-toggle" aria-expanded="${open}">
+      <span><b>Filter by start date</b> · ${esc(label)}</span>
+      <span class="rcount"><b>${n}</b> of ${state.tasks.length} tasks <i class="car">▾</i></span></button>
+    ${open ? `<div class="rbody">
+      <div class="rhead"><span class="rinfo">${all ? 'Showing all tasks' : 'Tasks starting <b>' + rangeShort() + '</b>'}</span></div>
+      <div class="rchips">${RANGE_PRESETS.map(([k, lb]) => `<button type="button" class="rchip ${r.preset === k ? 'on' : ''}" data-act="range" data-p="${k}">${lb}</button>`).join('')}
+        <label class="rmonth">Pick month <input type="month" id="rng-ym" value="${r.preset === 'ym' ? esc(r.ym) : ''}"></label></div>
+      ${r.preset === 'custom' ? `<div class="rcustom"><label class="fld">From<input type="date" id="rng-from" value="${esc(r.from || '')}"></label><label class="fld">To<input type="date" id="rng-to" value="${esc(r.to || '')}"></label></div>` : ''}
+      ${all ? '' : '<div class="rnote">Tasks with no start date are placed by their due date (or the day they were added).</div>'}
+    </div>` : ''}
   </div>`;
 }
 
@@ -717,6 +730,24 @@ function viewTeams(b) {
     </section>`;
   }).join('');
   b.innerHTML = cards ? `<div class="teams">${cards}</div>` : '<div class="card empty"><h3>No matching tasks</h3>Try another date range, or clear the filters.</div>';
+}
+
+function viewProfile(b) {
+  const bin = state.bin.slice().sort((x, y) => String(y.deletedAt).localeCompare(String(x.deletedAt)));
+  b.innerHTML = `<div class="card panel">
+      <div class="prof-head"><div class="avatar big">${esc(initials(auth.user))}</div>
+        <div><h3>${esc(auth.user)}</h3><div class="muted">${esc(CFG.DEPARTMENT)}</div></div></div>
+      <div class="tact"><button class="btn" data-act="rename">${icon('edit')}Change name</button>
+        <button class="btn danger" data-act="logout">${icon('logout')}Sign out</button></div>
+    </div>
+    <div class="card panel" style="margin-top:14px"><h3>Deleted tasks</h3>
+      <div class="att-list">${bin.length ? bin.map(t => { const tm = teamById(t.teamId); return `
+        <div class="att-item" style="cursor:default;align-items:center">
+          <div style="flex:1;min-width:0"><div class="t">${esc(t.title)}</div>
+          <small>${esc(tm ? tm.name : '')} · deleted ${esc(fmtDT(t.deletedAt))}${t.deletedBy ? ' by ' + esc(t.deletedBy) : ''}</small></div>
+          <button class="btn sm" data-act="task-restore" data-id="${esc(t.id)}">Restore</button></div>`; }).join('')
+        : '<div class="muted">No deleted tasks.</div>'}</div>
+    </div>`;
 }
 
 function viewTable(b) {
@@ -955,7 +986,7 @@ function activityList(taskId) {
     <div class="hd"><b>${fmtDate(uDate(u))}</b><span class="muted">by ${esc(u.user || 'Unknown')}</span>${pill(u.status)}<span class="tag">${clamp100(u.progress)}%</span>${i === 0 ? `<button type="button" class="btn sm" style="margin-left:auto" data-act="upd-edit" data-id="${esc(u.id)}">${icon('edit')}Edit last update</button>` : ''}</div>
     ${u.note ? `<p>${esc(u.note)}</p>` : ''}
     ${(u.attachments || []).length ? `<div class="atts" style="margin-top:8px">${u.attachments.map((a, i) => attTile(a, i, 'log', false, u.id)).join('')}</div>` : ''}
-    </div></div>`).join('');
+    </div></div>`).join('') + '<div class="muted" style="font-size:12.5px;margin-top:8px">Showing updates from the last 30 days.</div>';
 }
 
 function trendHTML(taskId) {
@@ -1070,11 +1101,13 @@ async function saveTask(btn) {
 }
 
 async function deleteTask() {
-  if (!confirm('Delete this task and its update log? This cannot be undone.')) return;
+  if (!confirm('Delete this task? You can restore it later from the Profile tab.')) return;
   try {
     const res = await request('deleteTask', { id: draft.task.id });
+    const gone = state.tasks.find(t => t.id === draft.task.id);
     state.tasks = state.tasks.filter(t => t.id !== draft.task.id);
-    state.updates = state.updates.filter(u => u.taskId !== draft.task.id);
+    if (gone) state.bin.push(Object.assign({}, gone, { deletedAt: new Date().toISOString(), deletedBy: auth.user }));
+    
     closeDrawer(true); renderView(true); toast(res.queued ? 'Deleted on this device — will sync when online' : 'Task deleted');
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -1271,7 +1304,7 @@ document.addEventListener('change', e => {
   if (id === 'flt-team') { state.filters.team = e.target.value; renderBody(); }
   else if (id === 'flt-status') { state.filters.status = e.target.value; renderBody(); }
   else if (id === 'flt-over') { state.filters.overdue = e.target.checked; renderBody(); }
-  else if (id === 'rng-ym') setRange(e.target.value ? { preset: 'ym', ym: e.target.value } : { preset: 'month' });
+  else if (id === 'rng-ym') { state.rangeOpen = false; setRange(e.target.value ? { preset: 'ym', ym: e.target.value } : { preset: 'month' }); }
   else if (id === 'rng-from' || id === 'rng-to') setRange({ preset: 'custom', from: $('#rng-from').value, to: $('#rng-to').value });
   else if (id === 'f-status') applyTaskAutoRules('status');
   else if (id === 'f-start') applyTaskAutoRules('start');
@@ -1288,10 +1321,11 @@ document.addEventListener('click', async e => {
     case 'nav': setView(d.v); break;
     case 'theme': { const n = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'; document.documentElement.setAttribute('data-theme', n); try { localStorage.setItem('mmt_theme', n); } catch (x) {} break; }
     case 'logout': switchUser(); break;
-    case 'rename': { const n = prompt('Your name (shown on updates you post):', auth.user); if (n && n.trim()) { auth.user = n.trim(); try { localStorage.setItem('mmt_user', auth.user); } catch (x) {} $('#who-name').textContent = auth.user; $('#who-av').textContent = initials(auth.user); registerVisit(); } break; }
+    case 'rename': { const n = prompt('Your name (shown on updates you post):', auth.user); if (n && n.trim()) { auth.user = n.trim(); try { localStorage.setItem('mmt_user', auth.user); } catch (x) {} $('#who-name').textContent = auth.user; $('#who-av').textContent = initials(auth.user); registerVisit(); if (state.view === 'profile') renderView(true); } break; }
     case 'refresh': el.disabled = true; if (await load(false)) { renderView(true); toast('Reloaded', 'ok'); } el.disabled = false; break;
     case 'clear-filters': state.filters = { q: '', team: '', status: '', overdue: false }; renderView(); break;
-    case 'range': { const was = state.range; setRange(d.p === 'custom' ? (was.preset === 'custom' ? was : Object.assign({ preset: 'custom' }, computeRange(was))) : { preset: d.p }); break; }
+    case 'range': { const was = state.range; state.rangeOpen = d.p === 'custom'; setRange(d.p === 'custom' ? (was.preset === 'custom' ? was : Object.assign({ preset: 'custom' }, computeRange(was))) : { preset: d.p }); break; }
+    case 'range-toggle': state.rangeOpen = !state.rangeOpen; renderView(true); break;
     case 'sort': state.sort = { key: d.k, dir: state.sort.key === d.k ? -state.sort.dir : 1 }; renderBody(); break;
     case 'open-team': state.filters.team = String(d.id); setView('teams'); window.scrollTo(0, 0); break;
     case 'task-open': openTask(d.id, undefined, 'view'); break;
@@ -1334,6 +1368,16 @@ document.addEventListener('click', async e => {
     case 'copy-report': { const ta = $('#rep'); try { await navigator.clipboard.writeText(ta.value); } catch (x) { ta.select(); document.execCommand('copy'); } toast('Report copied', 'ok'); break; }
     case 'csv': exportCSV(); break;
     case 'upd-pick': openUpdatePicker(); break;
+    case 'task-restore': {
+      const t = state.bin.find(x => String(x.id) === String(d.id)); if (!t) break;
+      try {
+        const res = await request('restoreTask', { id: t.id });
+        state.bin = state.bin.filter(x => x !== t);
+        state.tasks.push(Object.assign({}, t, { deletedAt: '', deletedBy: '' }));
+        renderView(true); toast(res.queued ? 'Restored on this device — will sync when online' : 'Task restored', 'ok');
+      } catch (err) { toast(err.message, 'err'); }
+      break;
+    }
     case 'upd-pick-go': $('#modal-root').innerHTML = ''; openTask(d.id, undefined, 'update', true); break;
     case 'seed': seedData(); break;
   }
