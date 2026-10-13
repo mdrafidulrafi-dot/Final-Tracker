@@ -738,7 +738,9 @@ function viewProfile(b) {
       <div class="prof-head"><div class="avatar big">${esc(initials(auth.user))}</div>
         <div><h3>${esc(auth.user)}</h3><div class="muted">${esc(CFG.DEPARTMENT)}</div></div></div>
       <div class="tact"><button class="btn" data-act="rename">${icon('edit')}Change name</button>
-        <button class="btn danger" data-act="logout">${icon('logout')}Sign out</button></div>
+        <button class="btn danger" data-act="logout">${icon('logout')}Sign out</button>
+        <button class="btn" data-act="app-update">${icon('refresh')}Update app</button></div>
+      <div class="muted" style="font-size:12.5px;margin-top:10px">Update app downloads the newest version from GitHub. Your tasks and any unsent changes stay on this device.</div>
     </div>
     <div class="card panel" style="margin-top:14px"><h3>Deleted tasks</h3>
       <div class="att-list">${bin.length ? bin.map(t => { const tm = teamById(t.teamId); return `
@@ -1367,6 +1369,17 @@ document.addEventListener('click', async e => {
     case 'report': openReport(); break;
     case 'copy-report': { const ta = $('#rep'); try { await navigator.clipboard.writeText(ta.value); } catch (x) { ta.select(); document.execCommand('copy'); } toast('Report copied', 'ok'); break; }
     case 'csv': exportCSV(); break;
+    case 'app-update': {
+      if (isOffline()) { toast('Connect to the internet to update the app.', 'err'); break; }
+      el.disabled = true; toast('Updating the app…');
+      try {
+        if (queue.length) await flushQueue();
+        await Promise.all(['index.html', 'style.css', 'config.js', 'seed.js', 'app.js', 'sw.js', 'manifest.json'].map(f => fetch(f, { cache: 'reload' }).catch(() => {})));
+        if (navigator.serviceWorker) { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(r => r.unregister())); }
+        if (window.caches) { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); }
+      } catch (x) {}
+      location.reload(); break;
+    }
     case 'upd-pick': openUpdatePicker(); break;
     case 'task-restore': {
       const t = state.bin.find(x => String(x.id) === String(d.id)); if (!t) break;
