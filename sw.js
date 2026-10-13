@@ -2,7 +2,7 @@
  * Strategy: try the network first (so new versions show up as soon as you are online),
  * fall back to the saved copy when the network is missing or slow.
  * Bump CACHE when you change app files and want everyone to refresh at once. */
-const CACHE = 'mmt-shell-v3';
+const CACHE = 'mmt-shell-v4';
 const SHELL = ['./', 'index.html', 'style.css', 'config.js', 'seed.js', 'app.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -21,7 +21,7 @@ self.addEventListener('fetch', e => {
     try {
       const net = await Promise.race([
         fetch(req),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), 5000))
+        new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), 3000))
       ]);
       if (net && net.ok) cache.put(req, net.clone());
       return net;

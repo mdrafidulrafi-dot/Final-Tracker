@@ -169,7 +169,7 @@ input[type=checkbox]{width:22px;height:22px;min-height:22px;padding:0;accent-col
 
 /* ---------- table ---------- */
 .tbl-wrap{overflow:auto}
-table{width:100%;border-collapse:collapse;min-width:1020px;font-size:15px}
+table{width:100%;border-collapse:separate;border-spacing:0;min-width:1700px;font-size:15px}
 th,td{padding:12px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink2);background:var(--surface2);position:sticky;top:0;cursor:pointer;white-space:nowrap;user-select:none;font-weight:800;border-bottom:2px solid var(--line-strong)}
 th.sorted::after{content:' ▲'} th.sorted.desc::after{content:' ▼'}
@@ -338,3 +338,23 @@ td .tact{flex-wrap:nowrap}
 .tdesc{margin-top:6px;color:var(--ink2);font-size:15.5px;white-space:pre-wrap}
 .prev-h{margin:6px 0 2px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink2);font-weight:800}
 @media (max-width:560px){.tact .btn{flex:1 1 0}}
+
+/* frozen columns (All tasks) */
+th{z-index:3}
+th.c1,td.c1{position:sticky;left:0;width:112px;min-width:112px;max-width:112px;background:var(--surface);z-index:2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+th.c2,td.c2{position:sticky;left:112px;width:230px;min-width:230px;max-width:230px;background:var(--surface);z-index:2;box-shadow:3px 0 0 var(--line-strong)}
+th.c1,th.c2{background:var(--surface2);z-index:4}
+tbody tr:hover td.c1,tbody tr:hover td.c2{background:var(--surface2)}
+@media (max-width:560px){
+  th.c1,td.c1{width:78px;min-width:78px;max-width:78px;font-size:12.5px;padding:8px 6px}
+  th.c2,td.c2{left:78px;width:150px;min-width:150px;max-width:150px;padding:8px}
+}
+/* timeline: team name always visible */
+.tl-gt{position:sticky;left:12px;display:inline-block}
+.tl-tm{font-weight:800;color:var(--accent)}
+/* update picker */
+.pk-search{position:relative}
+.pk-search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--muted);width:18px;height:18px}
+.pk-search input{padding-left:38px}
+.pk-list{display:flex;flex-direction:column;overflow:auto;max-height:60vh}
+.pk-item{align-items:center}

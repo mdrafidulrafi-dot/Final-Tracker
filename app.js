@@ -130,10 +130,16 @@ const state = {
   range: loadRange(),
   sort: { key: 'startDate', dir: 1 }
 };
-const auth = { user: '' };
+const auth = { user: '', pw: '' };
 let draft = null;      // task drawer draft  { isNew, dirty, task }
 let updDraft = null;   // "post update" attachments
 let refreshTimer = null;
+let verifying = false, qT = null;
+const hist = { layers: 0, skip: 0 };   // browser-history entries used by the open drawer / popup / preview
+function pushLayer() { try { history.pushState({ layer: 1 }, ''); hist.layers++; } catch (e) {} }
+function popLayer() { if (hist.layers > 0) { hist.layers--; hist.skip++; try { history.back(); } catch (e) { hist.skip--; } } }
+function closeLightbox() { const r = $('#lightbox-root'); if (r.children.length) { r.innerHTML = ''; popLayer(); } pvCurrent = null; }
+function authFail() { try { localStorage.removeItem('mmt_pw'); } catch (e) {} toast('Wrong or changed password - please sign in again.', 'err'); switchUser(); }
 let pvCurrent = null;  // attachment shown in preview
 
 const allTeams = () => state.teams.concat([COMBINED]);
@@ -252,19 +258,22 @@ async function fetchJSON(url, opts, ms) {
   try {
     const r = await fetch(url, Object.assign({}, opts, ctl ? { signal: ctl.signal } : {}));
     const txt = await r.text();
-    try { return JSON.parse(txt); }
+    let j;
+    try { j = JSON.parse(txt); }
     catch (e) { throw new Error('The server sent an unexpected reply. Check that the web app is deployed for "Anyone".'); }
+    if (j && j.auth && !verifying && auth.user) authFail();
+    return j;
   } finally { if (timer) clearTimeout(timer); }
 }
 
 const api = {
   async load() {
     if (DEMO) { const d = demo.get(); return { ok: true, teams: d.teams, tasks: d.tasks, updates: d.updates }; }
-    return fetchJSON(`${CFG.API_URL}?action=getAll`, {}, 30000);
+    return fetchJSON(`${CFG.API_URL}?action=getAll&pw=${encodeURIComponent(auth.pw)}`, {}, 30000);
   },
   async call(action, data, user, ms) {
     if (DEMO) { try { return demoCall(action, data); } catch (e) { return { ok: false, error: e.message }; } }
-    return fetchJSON(CFG.API_URL, { method: 'POST', body: JSON.stringify({ action, user: user === undefined ? auth.user : user, data }) },
+    return fetchJSON(CFG.API_URL, { method: 'POST', body: JSON.stringify({ action, user: user === undefined ? auth.user : user, password: auth.pw, data }) },
       ms || (action === 'uploadFile' ? 120000 : 45000));
   }
 };
@@ -321,16 +330,18 @@ let flushing = false;
 async function flushQueue() {
   if (DEMO || flushing || !queue.length || isOffline()) return;
   flushing = true; setSync('busy');
+  let bad = false;
   try {
     while (queue.length) {
       const op = queue[0];
       let res;
       try { res = await api.call(op.action, op.data, op.user, 60000); }
       catch (e) { break; }                       // no connection / bad reply → try again later, keep the change
+      if (!res.ok) bad = true;
       if (!res.ok) toast(`Could not sync "${op.data.title || op.data.name || op.action}": ${res.error || 'server error'}`, 'err');
       queue.shift(); writeQueue();
     }
-  } finally { flushing = false; setSync(queue.length ? 'off' : 'ok'); updateNet(); }
+  } finally { flushing = false; setSync(queue.length ? 'off' : 'ok'); updateNet(); if (bad && !queue.length) load(true).then(ok => { if (ok) renderView(true); }); }
 }
 async function syncNow() {
   if (!auth.user) return;
@@ -339,22 +350,12 @@ async function syncNow() {
 }
 
 async function requestQueued(action, data) {
-  if (!queue.length && !isOffline()) {
-    setSync('busy');
-    try {
-      const res = await api.call(action, data);
-      if (!res.ok) throw new Error(res.error || 'Request failed');
-      setSync('ok'); return res;
-    } catch (e) {
-      if (!isNetErr(e)) { setSync('ok'); throw e; }       // a real server-side error: show it
-    }
-  }
-  const res = localApply(action, data);                    // offline (or flaky): keep it on this device
+  const res = localApply(action, data);                    // shown at once; the server catches up in the background
   queue.push({ qid: uid('Q'), action, data: clone(data), user: auth.user, at: Date.now() });
   writeQueue(); setTimeout(saveCache, 0);
-  res.queued = true;
-  setSync(isOffline() ? 'off' : 'ok'); updateNet();
-  if (!isOffline()) setTimeout(syncNow, 2500);
+  res.queued = isOffline();
+  setSync(isOffline() ? 'off' : 'busy'); updateNet();
+  if (!isOffline()) setTimeout(flushQueue, 0);
   return res;
 }
 
@@ -411,9 +412,9 @@ async function load(silent) {
 
 /* =============================== name entry / boot =============================== */
 function switchUser() {
-  try { localStorage.removeItem('mmt_user'); } catch (e) {}
-  auth.user = ''; clearInterval(refreshTimer);
-  closeDrawer(true); closeModal(); $('#lightbox-root').innerHTML = '';
+  try { localStorage.removeItem('mmt_user'); localStorage.removeItem('mmt_pw'); } catch (e) {}
+  auth.user = ''; auth.pw = ''; clearInterval(refreshTimer);
+  closeLightbox(); closeModal(); closeDrawer(true);
   showLogin();
 }
 
@@ -425,6 +426,8 @@ function showLogin() {
     <div class="muted">${esc(CFG.DEPARTMENT)}</div>
     <form id="login-form">
       <label class="fld">Enter your name to continue<input id="lg-name" placeholder="e.g. Rafid" autocomplete="name" required value="${esc(auth.user)}"></label>
+      ${DEMO ? '' : '<label class="fld">Password<input id="lg-pw" type="password" inputmode="numeric" autocomplete="current-password" required></label>'}
+      <div class="err-msg" id="lg-err"></div>
       <div class="muted" style="font-size:12.5px">Your name is shown next to the updates you post.</div>
       <button class="btn primary" style="justify-content:center">Enter</button>
     </form>
@@ -432,8 +435,23 @@ function showLogin() {
   $('#lg-name').focus();
   $('#login-form').addEventListener('submit', async e => {
     e.preventDefault();
-    auth.user = $('#lg-name').value.trim(); if (!auth.user) return;
-    try { localStorage.setItem('mmt_user', auth.user); } catch (x) {}
+    const name = $('#lg-name').value.trim(); if (!name) return;
+    const pw = DEMO ? '' : $('#lg-pw').value.trim();
+    const btn = $('#login-form button'), err = $('#lg-err');
+    if (!DEMO) {
+      btn.disabled = true; err.textContent = '';
+      let saved = ''; try { saved = localStorage.getItem('mmt_pw') || ''; } catch (x) {}
+      verifying = true;
+      try {
+        const r = await fetchJSON(CFG.API_URL, { method: 'POST', body: JSON.stringify({ action: 'login', user: name, password: pw, data: {} }) }, 20000);
+        if (!r.ok) { err.textContent = 'Wrong password. Please try again.'; btn.disabled = false; verifying = false; return; }
+      } catch (x) {
+        if (!(isNetErr(x) && saved && saved === pw)) { err.textContent = isNetErr(x) ? 'No connection - cannot check the password.' : x.message; btn.disabled = false; verifying = false; return; }
+      }
+      verifying = false;
+    }
+    auth.user = name; auth.pw = pw;
+    try { localStorage.setItem('mmt_user', name); localStorage.setItem('mmt_pw', pw); } catch (x) {}
     await begin();
   });
 }
@@ -448,23 +466,24 @@ async function begin() {
   registerVisit();
   if (!DEMO && loadCache()) {            // open instantly from the copy saved on this device, then refresh in the background
     start();
-    load(true).then(ok => { if (ok) renderView(true); else toast('Showing the data saved on this device. It will sync when the connection is back.'); });
+    load(true).then(ok => { if (!auth.user) return; if (ok) renderView(true); else toast('Showing the data saved on this device. It will sync when the connection is back.'); });
     return;
   }
   const ok = await load(true);
+  if (!auth.user) return;
   start();
   if (!ok) toast('Could not load data. Check API_URL in config.js and that the web app is deployed for "Anyone".', 'err');
 }
 
 async function boot() {
-  try { auth.user = localStorage.getItem('mmt_user') || ''; } catch (e) {}
-  if (auth.user) return begin();
+  try { auth.user = localStorage.getItem('mmt_user') || ''; auth.pw = localStorage.getItem('mmt_pw') || ''; } catch (e) {}
+  if (auth.user && (DEMO || auth.pw)) return begin();
   showLogin();
 }
 
 function start() {
   buildShell();
-  setView(state.view);
+  setView(state.view, 'replace');
   clearInterval(refreshTimer);
   refreshTimer = setInterval(async () => {
     if (queue.length) await flushQueue();
@@ -503,7 +522,7 @@ function buildShell() {
         <div><h1 id="v-title"></h1><div class="sub" id="v-sub"></div></div><div class="grow"></div>
         <button class="btn" data-act="refresh" title="Reload from sheet">${icon('refresh')}Refresh</button>
         <button class="btn" data-act="report" title="Daily report for WhatsApp">${icon('report')}Daily report</button>
-        <button class="btn" data-act="csv">${icon('download')}Export</button>
+        <button class="btn" data-act="upd-pick">${icon('edit')}Update</button>
         <button class="btn" data-act="team-new">${icon('users')}Add team</button>
         <button class="btn primary" data-act="task-new">${icon('plus')}New task</button>
       </div>
@@ -517,7 +536,9 @@ function buildShell() {
   updateNet(); setSync('ok');
 }
 
-function setView(v) {
+function setView(v, how) {
+  const changed = v !== state.view;
+  try { if (how === 'replace') history.replaceState({ view: v }, ''); else if (how !== 'pop' && changed) history.pushState({ view: v }, ''); } catch (e) {}
   state.view = v;
   $$('.nav button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
   const n = NAV.find(x => x.id === v);
@@ -678,7 +699,7 @@ function viewTeams(b) {
   const list = filtered();
   const cards = boardTeams().map(team => {
     const mine = list.filter(t => String(t.teamId) === String(team.id)).sort(byStart);
-    if (filtersActive() && !mine.length) return '';
+    if (filtersActive() && !mine.length && !(state.filters.team && !state.filters.q && !state.filters.status && !state.filters.overdue)) return '';
     const s = stats(tasksOf(team.id));
     const virt = !!team.virtual;
     return `<section class="card team" id="team-${esc(team.id)}">
@@ -707,19 +728,19 @@ function viewTable(b) {
     if (!x && y) return 1; if (x && !y) return -1;
     return String(x).localeCompare(String(y), undefined, { numeric: true }) * dir;
   });
-  const th = (k, label) => `<th data-act="sort" data-k="${k}" class="${key === k ? 'sorted ' + (dir < 0 ? 'desc' : '') : ''}">${label}</th>`;
+  const th = (k, label, cls) => `<th data-act="sort" data-k="${k}" class="${cls || ''} ${key === k ? 'sorted ' + (dir < 0 ? 'desc' : '') : ''}">${label}</th>`;
   b.innerHTML = `<div class="card tbl-wrap"><table><thead><tr>
-    ${th('team', 'Team')}${th('title', 'Task')}${th('responsibles', 'Responsible')}${th('daysRequired', 'Days')}${th('startDate', 'Start')}${th('endDate', 'Due')}${th('actualEnd', 'Actual end')}${th('status', 'Status')}${th('progress', 'Progress')}<th>Files</th><th>Actions</th></tr></thead>
+    ${th('team', 'Team', 'c1')}${th('title', 'Task', 'c2')}${th('description', 'Description')}${th('responsibles', 'Responsible')}${th('daysRequired', 'Days')}${th('startDate', 'Start')}${th('endDate', 'Due')}${th('actualEnd', 'Actual end')}${th('status', 'Status')}${th('progress', 'Progress')}${th('remarks', 'Remarks')}<th>Files</th><th>Actions</th></tr></thead>
     <tbody>${list.map(t => { const tm = teamById(t.teamId); return `<tr>
-      <td class="nowrap"><b>${esc(tm ? tm.name : '—')}</b></td>
-      <td style="min-width:220px"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc([t.description, t.remarks].filter(Boolean).join(' · '))}</div></td>
+      <td class="c1"><b>${esc(tm ? tm.name : '—')}</b></td>
+      <td class="c2"><div class="ttitle">${esc(t.title)}</div></td><td style="min-width:200px">${esc(t.description || '—')}</td>
       <td style="min-width:150px">${esc(respOf(t) || '—')}</td><td class="mono">${t.daysRequired === '' || t.daysRequired == null ? '—' : esc(t.daysRequired)}</td>
       <td class="nowrap">${fmtDate(t.startDate)}</td>
       <td class="nowrap">${fmtDate(t.endDate)} ${isOverdue(t) ? `<span class="tag over">${icon('alert')}</span>` : ''}</td>
       <td class="nowrap">${fmtDate(t.actualEnd)}</td><td>${pill(t.status)}</td>
       <td><div style="display:flex;gap:8px;align-items:center">${progressBar(t.progress, t.status === 'Completed')}<span class="mono">${clamp100(t.progress)}%</span></div></td>
-      <td>${(t.attachments || []).length ? `<span class="tag">${icon('clip')}${t.attachments.length}</span>` : ''}</td><td class="nowrap">${taskBtns(t.id)}</td></tr>`; }).join('')
-      || '<tr><td colspan="11"><div class="empty">No matching tasks.</div></td></tr>'}</tbody></table></div>`;
+      <td style="min-width:200px">${esc(t.remarks || '—')}</td><td>${(t.attachments || []).length ? `<span class="tag">${icon('clip')}${t.attachments.length}</span>` : ''}</td><td class="nowrap">${taskBtns(t.id)}</td></tr>`; }).join('')
+      || '<tr><td colspan="13"><div class="empty">No matching tasks.</div></td></tr>'}</tbody></table></div>`;
 }
 
 function viewTimeline(b) {
@@ -736,12 +757,12 @@ function viewTimeline(b) {
   const todayPct = ((today - min) / D + 0.5) / N * 100;
   const groups = allTeams().map(tm => ({ tm, ts: list.filter(t => String(t.teamId) === String(tm.id)) })).filter(g => g.ts.length);
   b.innerHTML = `<div class="card tl-scroll"><div class="tl" style="--n:${N}">
-    <div class="tl-row tl-head"><div class="tl-label">Task</div><div class="tl-track">
+    <div class="tl-row tl-head"><div class="tl-label">Team · Task</div><div class="tl-track">
       ${days.map((d, i) => `<div class="tl-day">${d.getDate() === 1 || i === 0 ? `<em>${MN[d.getMonth()]}</em>` : '<em>&nbsp;</em>'}${d.getDate()}</div>`).join('')}</div></div>
-    ${groups.map(g => `<div class="tl-group">${esc(g.tm.name)}${g.tm.lead ? ' · ' + esc(g.tm.lead) : ''}</div>` + g.ts.map(t => {
+    ${groups.map(g => `<div class="tl-group"><span class="tl-gt">${esc(g.tm.name)}${g.tm.lead ? ' · ' + esc(g.tm.lead) : ''}</span></div>` + g.ts.map(t => {
       const s = toD(t.startDate || t.endDate), e = toD(t.endDate || t.startDate);
       const left = (s - min) / D / N * 100, width = ((e - s) / D + 1) / N * 100;
-      return `<div class="tl-row"><div class="tl-label"><b data-act="task-open" data-id="${esc(t.id)}">${esc(t.title)}</b><small title="${esc(respOf(t))}">${esc(respOf(t))} · ${clamp100(t.progress)}%</small></div>
+      return `<div class="tl-row"><div class="tl-label"><b data-act="task-open" data-id="${esc(t.id)}">${esc(t.title)}</b><small title="${esc(g.tm.name + ' · ' + respOf(t))}"><span class="tl-tm">${esc(g.tm.name)}</span> · ${esc(respOf(t))} · ${clamp100(t.progress)}%</small></div>
         <div class="tl-track"><div class="tl-today" style="left:${todayPct}%"></div>
         <div class="tl-bar st-${slug(t.status)} ${isOverdue(t) ? 'over' : ''}" style="left:${left}%;width:${width}%" data-act="task-open" data-id="${esc(t.id)}" title="${esc(t.title)} · ${fmtDate(t.startDate)} → ${fmtDate(t.endDate)}"><i style="width:${clamp100(t.progress)}%"></i></div></div></div>`;
     }).join('')).join('')}
@@ -759,7 +780,7 @@ function fetchFileBlob(a, thumb) {
   const key = (thumb ? 't:' : 'f:') + a.id;
   if (blobCache.has(key)) return blobCache.get(key);
   const p = (async () => {
-    const r = await fetch(`${CFG.API_URL}?action=${thumb ? 'thumb' : 'file'}&id=${encodeURIComponent(a.id)}`);
+    const r = await fetch(`${CFG.API_URL}?action=${thumb ? 'thumb' : 'file'}&id=${encodeURIComponent(a.id)}&pw=${encodeURIComponent(auth.pw)}`);
     const d = await r.json();
     if (!d.ok || !d.base64) throw new Error(d.error || 'File not available');
     const bin = atob(d.base64), arr = new Uint8Array(bin.length);
@@ -772,6 +793,7 @@ function fetchFileBlob(a, thumb) {
 }
 
 async function previewAttachment(a) {
+  if (!$('#lightbox-root').children.length) pushLayer();
   pvCurrent = a;
   $('#lightbox-root').innerHTML = `<div class="pv" data-act="pv-bg"><div class="pv-box">
     <header><b>${esc(a.name)}</b><span class="sp"></span>
@@ -889,7 +911,8 @@ function blankTask(teamId) {
   return { id: uid('T-'), teamId: teamId || (state.teams[0] && state.teams[0].id) || COMBINED_ID, title: '', description: '', drawing: '', responsibles: '',
     daysRequired: '', startDate: '', endDate: '', actualEnd: '', status: 'In Planning', progress: 0, priority: 'Normal', remarks: '', attachments: [] };
 }
-function openTask(id, teamId, mode) {
+function openTask(id, teamId, mode, reuse) {
+  if (!reuse && !$('#drawer-root').children.length) pushLayer();
   const ex = id && taskById(id);
   draft = { isNew: !ex, dirty: false, mode: ex && mode === 'update' ? 'update' : 'view', task: ex ? clone(ex) : blankTask(teamId) };
   updDraft = { attachments: [] };
@@ -905,7 +928,7 @@ function drawerHasChanges() {
 }
 function closeDrawer(force) {
   if (!force && drawerHasChanges() && !confirm('You have unsaved changes. Close anyway?')) return;
-  $('#drawer-root').innerHTML = ''; draft = null; updDraft = null;
+  const had = $('#drawer-root').children.length; $('#drawer-root').innerHTML = ''; draft = null; updDraft = null; if (had) popLayer();
 }
 
 function chipBtn(name, on, isAll) {
@@ -1096,9 +1119,10 @@ async function postUpdate(btn) {
 
 /* =============================== team modal =============================== */
 function openModal(html, wide) {
+  if (!$('#modal-root').children.length) pushLayer();
   $('#modal-root').innerHTML = `<div class="modal-wrap" data-act="modal-bg"><div class="modal ${wide ? 'wide' : ''}" role="dialog">${html}</div></div>`;
 }
-function closeModal() { $('#modal-root').innerHTML = ''; }
+function closeModal() { if ($('#modal-root').children.length) { $('#modal-root').innerHTML = ''; popLayer(); } }
 
 function openTeam(id) {
   const t = id ? teamById(id) : { id: '', name: '', supervisor: '', lead: '', members: '', order: state.teams.length + 1 };
@@ -1158,6 +1182,25 @@ function openReport() {
     <footer><button class="btn" data-act="modal-close">Close</button><button class="btn primary" data-act="copy-report">${icon('copy')}Copy for WhatsApp</button></footer>`, true);
 }
 
+function pickRows(q) {
+  q = String(q || '').trim().toLowerCase();
+  const list = state.tasks.filter(t => {
+    if (!q) return true;
+    const tm = teamById(t.teamId);
+    return [t.title, t.description, respOf(t), tm && tm.name].join(' ').toLowerCase().includes(q);
+  }).sort((x, y) => ((x.status === 'Completed') - (y.status === 'Completed')) || byStart(x, y));
+  return list.length ? list.map(t => { const tm = teamById(t.teamId); return `
+    <div class="att-item pk-item" data-act="upd-pick-go" data-id="${esc(t.id)}">
+      <div style="flex:1;min-width:0"><div class="t">${esc(t.title)}</div>
+      <small>${esc(tm ? tm.name : '')} · ${clamp100(t.progress)}%${t.endDate ? ' · due ' + fmtDate(t.endDate) : ''}</small></div>${pill(t.status)}</div>`; }).join('')
+    : '<div class="muted">No tasks found.</div>';
+}
+function openUpdatePicker() {
+  openModal(`<header><h2>Update a task</h2><button class="icon-btn" data-act="modal-close">${icon('x')}</button></header>
+    <div class="mb"><div class="pk-search">${icon('search')}<input id="pk-q" placeholder="Search task or team…" autocomplete="off"></div>
+    <div class="pk-list" id="pk-list">${pickRows('')}</div></div>`, true);
+}
+
 function exportCSV() {
   const cols = ['Team', 'Task', 'Description', 'Drawing', 'Responsible', 'Days', 'Start', 'Due', 'Actual end', 'Status', 'Progress %', 'Priority', 'Remarks', 'Files'];
   const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
@@ -1212,7 +1255,8 @@ function syncProgress(prefix, from) {
 document.addEventListener('input', e => {
   const id = e.target.id;
   if (draft && e.target.closest('#sec-details')) draft.dirty = true;
-  if (id === 'flt-q') { state.filters.q = e.target.value; renderBody(); }
+  if (id === 'flt-q') { state.filters.q = e.target.value; clearTimeout(qT); qT = setTimeout(renderBody, 160); }
+  else if (id === 'pk-q') { const l = $('#pk-list'); if (l) l.innerHTML = pickRows(e.target.value); }
   else if (id === 'f-progress') syncProgress('f', 'r');
   else if (id === 'f-progress-n') syncProgress('f', 'n');
   else if (id === 'u-progress') syncProgress('u', 'r');
@@ -1249,7 +1293,7 @@ document.addEventListener('click', async e => {
     case 'clear-filters': state.filters = { q: '', team: '', status: '', overdue: false }; renderView(); break;
     case 'range': { const was = state.range; setRange(d.p === 'custom' ? (was.preset === 'custom' ? was : Object.assign({ preset: 'custom' }, computeRange(was))) : { preset: d.p }); break; }
     case 'sort': state.sort = { key: d.k, dir: state.sort.key === d.k ? -state.sort.dir : 1 }; renderBody(); break;
-    case 'open-team': state.filters.team = ''; setView('teams'); setTimeout(() => { const t = document.getElementById('team-' + d.id); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 30); break;
+    case 'open-team': state.filters.team = String(d.id); setView('teams'); window.scrollTo(0, 0); break;
     case 'task-open': openTask(d.id, undefined, 'view'); break;
     case 'task-update': openTask(d.id, undefined, 'update'); break;
     case 'upd-edit': startEditUpdate(d.id); break;
@@ -1278,8 +1322,8 @@ document.addEventListener('click', async e => {
     case 'att-dl': { const a = findAtt(d); if (a) downloadAttachment(a); break; }
     case 'pv-dl': if (pvCurrent) downloadAttachment(pvCurrent); break;
     case 'pv-newtab': if (pvCurrent) openInNewTab(pvCurrent); break;
-    case 'pv-bg': if (e.target === el) { $('#lightbox-root').innerHTML = ''; pvCurrent = null; } break;
-    case 'lb-close': $('#lightbox-root').innerHTML = ''; pvCurrent = null; break;
+    case 'pv-bg': if (e.target === el) closeLightbox(); break;
+    case 'lb-close': closeLightbox(); break;
     case 'team-new': openTeam(); break;
     case 'team-edit': openTeam(d.id); break;
     case 'team-save': saveTeam(el); break;
@@ -1289,18 +1333,32 @@ document.addEventListener('click', async e => {
     case 'report': openReport(); break;
     case 'copy-report': { const ta = $('#rep'); try { await navigator.clipboard.writeText(ta.value); } catch (x) { ta.select(); document.execCommand('copy'); } toast('Report copied', 'ok'); break; }
     case 'csv': exportCSV(); break;
+    case 'upd-pick': openUpdatePicker(); break;
+    case 'upd-pick-go': $('#modal-root').innerHTML = ''; openTask(d.id, undefined, 'update', true); break;
     case 'seed': seedData(); break;
   }
 });
 
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
-  if ($('#lightbox-root').children.length) { $('#lightbox-root').innerHTML = ''; pvCurrent = null; }
+  if ($('#lightbox-root').children.length) closeLightbox();
   else if ($('#modal-root').children.length) closeModal();
   else if ($('#drawer-root').children.length) closeDrawer();
 });
 
 new MutationObserver(hydrate).observe($('#drawer-root'), { childList: true, subtree: true });
+window.addEventListener('popstate', e => {
+  if (hist.skip > 0) { hist.skip--; return; }
+  const dec = () => { hist.layers = Math.max(0, hist.layers - 1); };
+  if ($('#lightbox-root').children.length) { $('#lightbox-root').innerHTML = ''; pvCurrent = null; dec(); return; }
+  if ($('#modal-root').children.length) { $('#modal-root').innerHTML = ''; dec(); return; }
+  if ($('#drawer-root').children.length) {
+    if (drawerHasChanges() && !confirm('You have unsaved changes. Close anyway?')) { try { history.pushState({ layer: 1 }, ''); } catch (x) {} return; }
+    $('#drawer-root').innerHTML = ''; draft = null; updDraft = null; dec(); return;
+  }
+  const v = e.state && e.state.view;
+  if (v && auth.user && NAV.some(n => n.id === v) && $('#view')) setView(v, 'pop');
+});
 window.addEventListener('online', () => { updateNet(); syncNow(); });
 window.addEventListener('offline', () => { setSync('off'); updateNet(); });
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {      // lets the app itself open with no connection

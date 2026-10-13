@@ -11,7 +11,7 @@
  * Attachments are uploaded to the Drive folder "Maintenance Task Attachments".
  * They stay private; the app previews/downloads them through this script.
  *
- * There is no password: anyone who opens the web app enters their name.
+ * Access: everyone enters their name plus the shared password set in APP_PASSWORD below.
  *
  * Adding rows directly in the sheet is fine: leave the "id" cell empty and a unique id
  * is filled in automatically (Tasks → T-001, T-002…, Teams → A, B, C…, Updates → U…).
@@ -30,6 +30,7 @@ const NUMERIC = { daysRequired: 1, progress: 1, order: 1, visits: 1 };
 const JSON_COLS = { attachments: 1 };
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 const ensured_ = {};
+const APP_PASSWORD = '2468';   // shared password (everyone also enters their name). Change it here, then redeploy.
 
 /* ---------- one-time setup ---------- */
 function setup() {
@@ -46,6 +47,7 @@ function setup() {
 function doGet(e) {
   try {
     const q = (e && e.parameter) || {};
+    if (q.action !== 'ping' && String(q.pw || '') !== APP_PASSWORD) return json_({ ok: false, error: 'Wrong password', auth: true });
     switch (q.action) {
       case 'ping':  return json_({ ok: true, app: 'maintenance-tracker' });
       case 'file':  return json_(fileData_(q.id, false));
@@ -64,10 +66,13 @@ function doGet(e) {
 }
 
 function doPost(e) {
+  let req;
+  try { req = JSON.parse(e.postData.contents); } catch (err) { return json_({ ok: false, error: 'Bad request' }); }
+  if (String(req.password || '') !== APP_PASSWORD) return json_({ ok: false, error: 'Wrong password', auth: true });
+  if (req.action === 'login') return json_({ ok: true });
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(25000);
-    const req = JSON.parse(e.postData.contents);
     const d = req.data || {};
     const user = String(req.user || '').slice(0, 60);
     switch (req.action) {
@@ -152,13 +157,14 @@ function addUpdate_(d, user) {
   const p = Math.max(0, Math.min(100, Number(d.progress)));
   const progress = isNaN(p) ? task.progress : p;
 
-  const latest = readAll_('Updates')
+  const allUpd = readAll_('Updates');
+  const latest = allUpd
     .filter(function (u) { return String(u.taskId) === String(d.taskId); })
     .reduce(function (m, u) { const x = u.date || String(u.timestamp).slice(0, 10); return x > m ? x : m; }, '');
 
   // The app now sends its own id, so an update that was sent twice (e.g. after a dropped connection) is stored only once.
   if (d.id) {
-    const dup = findById_('Updates', d.id);
+    const dup = allUpd.filter(function (u) { return String(u.id) === String(d.id); })[0];
     if (dup) return { ok: true, update: dup, task: outTask_(task) };
   }
 
@@ -183,7 +189,8 @@ function addUpdate_(d, user) {
 
 /** Edits an existing update (the app only offers this for a task's latest update). The task row follows if it is still the newest. */
 function editUpdate_(d, user) {
-  const old = findById_('Updates', d.id);
+  const allUpd = readAll_('Updates');
+  const old = allUpd.filter(function (u) { return String(u.id) === String(d.id); })[0];
   if (!old) throw new Error('Update not found');
   const task = findById_('Tasks', old.taskId);
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(d.date || '')) ? d.date : (old.date || today_());
@@ -197,7 +204,7 @@ function editUpdate_(d, user) {
   upsert_('Updates', upd);
   let outTask = task;
   if (task) {
-    const latest = readAll_('Updates')
+    const latest = allUpd
       .filter(function (u) { return String(u.taskId) === String(old.taskId) && String(u.id) !== String(old.id); })
       .reduce(function (m, u) { const x = u.date || String(u.timestamp).slice(0, 10); return x > m ? x : m; }, '');
     if (date >= latest) {
@@ -437,7 +444,7 @@ function ensureIdsThrottled_() {
   try {
     const cache = CacheService.getScriptCache();
     if (cache.get('ids_checked')) return;
-    if (ensureIds_(4000) >= 0) cache.put('ids_checked', '1', 30);
+    if (ensureIds_(4000) >= 0) cache.put('ids_checked', '1', 300);
   } catch (e) {}
 }
 
