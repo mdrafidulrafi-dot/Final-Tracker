@@ -605,7 +605,7 @@ function filterBar() {
   return `<div class="fbar">
     <div class="search">${icon('search')}<input id="flt-q" placeholder="Search task, person, remark…" value="${esc(f.q)}"></div>
     <select id="flt-team"><option value="">All teams</option>${allTeams().map(t => `<option value="${esc(t.id)}" ${f.team === String(t.id) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
-    <select id="flt-status"><option value="">All statuses</option>${STATUSES.map(s => `<option ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+    <select id="flt-status"><option value="">All statuses</option><option ${f.status === 'Started' ? 'selected' : ''}>Started</option>${STATUSES.map(s => `<option ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
     <label class="chk"><input type="checkbox" id="flt-over" ${f.overdue ? 'checked' : ''}> Overdue only</label>
     <button class="btn ghost sm" data-act="clear-filters">Clear</button></div>`;
 }
@@ -615,7 +615,7 @@ function filtered() {
   return state.tasks.filter(t => {
     if (!inRange(t)) return false;
     if (f.team && String(t.teamId) !== f.team) return false;
-    if (f.status && t.status !== f.status) return false;
+    if (f.status && !(f.status === 'Started' ? (t.status === 'In Planning' || t.status === 'In Progress') : t.status === f.status)) return false;
     if (f.overdue && !isOverdue(t)) return false;
     if (q) {
       const team = teamById(t.teamId);
