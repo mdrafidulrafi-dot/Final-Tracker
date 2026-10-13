@@ -499,7 +499,6 @@ const NAV = [
   { id: 'dashboard', label: 'Dashboard', title: 'Dashboard', sub: 'Overview of all maintenance work' },
   { id: 'teams', label: 'Teams', title: 'Teams & work', sub: 'Who is doing what, and how far along' },
   { id: 'tasks', label: 'Tasks', title: 'All tasks', sub: 'Sortable list across every team' },
-  { id: 'update', label: 'Update', act: 'upd-pick', title: 'Update', sub: '' },
   { id: 'timeline', label: 'Timeline', title: 'Timeline', sub: 'Planned dates versus today' },
   { id: 'profile', label: 'Profile', title: 'Profile', sub: 'Your name and deleted tasks' }
 ];
@@ -527,6 +526,7 @@ function buildShell() {
         
         <button class="btn" data-act="report" title="Daily report for WhatsApp">${icon('report')}Daily report</button>
         
+        <button class="btn" data-act="upd-pick">${icon('edit')}Update</button>
         <button class="btn" data-act="team-new">${icon('users')}Add team</button>
         <button class="btn primary" data-act="task-new">${icon('plus')}New task</button>
         <button class="btn refresh-btn" data-act="refresh" title="Refresh" aria-label="Refresh">${icon('refresh')}<span class="rdot" id="rdot"></span></button>
