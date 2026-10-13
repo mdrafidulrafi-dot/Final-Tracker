@@ -199,6 +199,16 @@ function demoCall(action, data) {
       if (date >= latest) d.tasks[i] = norm({ status: upd.status, progress: upd.progress }, d.tasks[i]);
       demo.put(d); return { ok: true, update: upd, task: d.tasks[i] };
     }
+    case 'editUpdate': {
+      const ui = d.updates.findIndex(u => u.id === data.id); if (ui < 0) return { ok: false, error: 'Update not found' };
+      const old = d.updates[ui], date = /^\d{4}-\d{2}-\d{2}$/.test(data.date || '') ? data.date : uDate(old);
+      const upd = Object.assign({}, old, { date, note: data.note || '', status: data.status, progress: Number(data.progress), attachments: data.attachments || [] });
+      d.updates[ui] = upd;
+      const ti = d.tasks.findIndex(t => t.id === old.taskId);
+      const latest = d.updates.filter(u => u.taskId === old.taskId && u.id !== old.id).reduce((m, u) => uDate(u) > m ? uDate(u) : m, '');
+      if (ti >= 0 && date >= latest) d.tasks[ti] = norm({ status: upd.status, progress: upd.progress }, d.tasks[ti]);
+      demo.put(d); return { ok: true, update: upd, task: d.tasks[ti] };
+    }
     case 'uploadFile': {
       const url = 'data:' + data.mime + ';base64,' + data.base64;
       return { ok: true, file: { id: uid('F'), name: data.name, mime: data.mime, size: Math.round(data.base64.length * 0.75), url } };
@@ -210,7 +220,7 @@ function demoCall(action, data) {
 
 /* ---------- offline support: local copy of the data + a queue of changes made while offline ---------- */
 const QKEY = 'mmt_queue_v1', CKEY = 'mmt_cache_v1';
-const QUEUEABLE = { saveTask: 1, deleteTask: 1, saveTeam: 1, deleteTeam: 1, addUpdate: 1 };
+const QUEUEABLE = { saveTask: 1, deleteTask: 1, saveTeam: 1, deleteTeam: 1, addUpdate: 1, editUpdate: 1 };
 let queue = [];
 try { queue = JSON.parse(localStorage.getItem(QKEY)) || []; if (!Array.isArray(queue)) queue = []; } catch (e) { queue = []; }
 const writeQueue = () => { try { localStorage.setItem(QKEY, JSON.stringify(queue)); } catch (e) { toast('Phone storage is full — free some space so offline changes can be kept.', 'err'); } };
@@ -292,6 +302,15 @@ function localApply(action, data) {
       const upd = { id: data.id || uid('U'), date, taskId: String(data.taskId), taskTitle: task.title, user: auth.user, note: data.note || '',
                     status, progress: p, attachments: data.attachments || [], timestamp: now };
       return { ok: true, update: upd, task: date >= latest ? norm({ status, progress: p }, task) : task };
+    }
+    case 'editUpdate': {
+      const old = state.updates.find(u => u.id === data.id); if (!old) throw new Error('Update not found');
+      const task = taskById(old.taskId);
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(data.date || '') ? data.date : uDate(old);
+      const status = data.status || old.status, p = clamp100(data.progress);
+      const upd = Object.assign({}, old, { date, note: data.note != null ? data.note : old.note, status, progress: p, attachments: data.attachments || old.attachments || [] });
+      const latest = state.updates.filter(u => String(u.taskId) === String(old.taskId) && u.id !== old.id).reduce((m, u) => uDate(u) > m ? uDate(u) : m, '');
+      return { ok: true, update: upd, task: task && date >= latest ? norm({ status, progress: p }, task) : task };
     }
   }
   return { ok: false, error: 'Unknown action' };
@@ -617,7 +636,7 @@ function viewDashboard(b) {
       </div>
       <div class="card panel"><h3>Recent updates</h3>
         <div class="att-list">${recent.length ? recent.map(u => { const t = taskById(u.taskId); return `
-          <div class="att-item" data-act="task-open" data-id="${esc(u.taskId)}">
+          <div class="att-item" data-act="task-update" data-id="${esc(u.taskId)}">
             <div class="avatar" style="background:var(--side);color:#fff;flex:none">${esc(initials(u.user))}</div>
             <div style="min-width:0"><div class="t">${esc(t ? t.title : 'Deleted task')}</div>
             <small>${esc(u.user || '')} · ${fmtDate(uDate(u))} · ${esc(u.status)} ${Number(u.progress) || 0}%</small>
@@ -627,11 +646,12 @@ function viewDashboard(b) {
   </div>`;
 }
 
+const taskBtns = id => `<div class="tact"><button type="button" class="btn sm" data-act="task-open" data-id="${esc(id)}">${icon('file')}View task</button><button type="button" class="btn sm primary" data-act="task-update" data-id="${esc(id)}">${icon('edit')}Update task</button></div>`;
 function taskRow(t) {
   const n = (t.attachments || []).length;
   const resp = respOf(t);
   const sub = [t.description, t.drawing ? 'Dwg: ' + t.drawing : '', resp ? '👷 ' + resp : ''].filter(Boolean).join(' · ');
-  return `<div class="trow" data-act="task-open" data-id="${esc(t.id)}">
+  return `<div class="trow">
     <div style="min-width:0"><div class="ttitle">${esc(t.title)}</div>${sub ? `<div class="tsub">${esc(sub)}</div>` : ''}</div>
     <div class="tmeta">
       <div class="row">${pill(t.status)}${t.priority === 'Urgent' || t.priority === 'High' ? `<span class="tag ${slug(t.priority)}">${esc(t.priority)}</span>` : ''}</div>
@@ -643,6 +663,7 @@ function taskRow(t) {
       </div>
     </div>
     ${t.remarks ? `<div class="tremark">${esc(t.remarks)}</div>` : ''}
+    ${taskBtns(t.id)}
   </div>`;
 }
 
@@ -688,8 +709,8 @@ function viewTable(b) {
   });
   const th = (k, label) => `<th data-act="sort" data-k="${k}" class="${key === k ? 'sorted ' + (dir < 0 ? 'desc' : '') : ''}">${label}</th>`;
   b.innerHTML = `<div class="card tbl-wrap"><table><thead><tr>
-    ${th('team', 'Team')}${th('title', 'Task')}${th('responsibles', 'Responsible')}${th('daysRequired', 'Days')}${th('startDate', 'Start')}${th('endDate', 'Due')}${th('actualEnd', 'Actual end')}${th('status', 'Status')}${th('progress', 'Progress')}<th>Files</th></tr></thead>
-    <tbody>${list.map(t => { const tm = teamById(t.teamId); return `<tr data-act="task-open" data-id="${esc(t.id)}">
+    ${th('team', 'Team')}${th('title', 'Task')}${th('responsibles', 'Responsible')}${th('daysRequired', 'Days')}${th('startDate', 'Start')}${th('endDate', 'Due')}${th('actualEnd', 'Actual end')}${th('status', 'Status')}${th('progress', 'Progress')}<th>Files</th><th>Actions</th></tr></thead>
+    <tbody>${list.map(t => { const tm = teamById(t.teamId); return `<tr>
       <td class="nowrap"><b>${esc(tm ? tm.name : '—')}</b></td>
       <td style="min-width:220px"><div class="ttitle">${esc(t.title)}</div><div class="tsub">${esc([t.description, t.remarks].filter(Boolean).join(' · '))}</div></td>
       <td style="min-width:150px">${esc(respOf(t) || '—')}</td><td class="mono">${t.daysRequired === '' || t.daysRequired == null ? '—' : esc(t.daysRequired)}</td>
@@ -697,8 +718,8 @@ function viewTable(b) {
       <td class="nowrap">${fmtDate(t.endDate)} ${isOverdue(t) ? `<span class="tag over">${icon('alert')}</span>` : ''}</td>
       <td class="nowrap">${fmtDate(t.actualEnd)}</td><td>${pill(t.status)}</td>
       <td><div style="display:flex;gap:8px;align-items:center">${progressBar(t.progress, t.status === 'Completed')}<span class="mono">${clamp100(t.progress)}%</span></div></td>
-      <td>${(t.attachments || []).length ? `<span class="tag">${icon('clip')}${t.attachments.length}</span>` : ''}</td></tr>`; }).join('')
-      || '<tr><td colspan="10"><div class="empty">No matching tasks.</div></td></tr>'}</tbody></table></div>`;
+      <td>${(t.attachments || []).length ? `<span class="tag">${icon('clip')}${t.attachments.length}</span>` : ''}</td><td class="nowrap">${taskBtns(t.id)}</td></tr>`; }).join('')
+      || '<tr><td colspan="11"><div class="empty">No matching tasks.</div></td></tr>'}</tbody></table></div>`;
 }
 
 function viewTimeline(b) {
@@ -868,17 +889,19 @@ function blankTask(teamId) {
   return { id: uid('T-'), teamId: teamId || (state.teams[0] && state.teams[0].id) || COMBINED_ID, title: '', description: '', drawing: '', responsibles: '',
     daysRequired: '', startDate: '', endDate: '', actualEnd: '', status: 'In Planning', progress: 0, priority: 'Normal', remarks: '', attachments: [] };
 }
-function openTask(id, teamId) {
+function openTask(id, teamId, mode) {
   const ex = id && taskById(id);
-  draft = { isNew: !ex, dirty: false, task: ex ? clone(ex) : blankTask(teamId) };
+  draft = { isNew: !ex, dirty: false, mode: ex && mode === 'update' ? 'update' : 'view', task: ex ? clone(ex) : blankTask(teamId) };
   updDraft = { attachments: [] };
   $('#drawer-root').innerHTML = drawerHTML();
   if (!ex) { const t = $('#f-title'); if (t) t.focus(); }
 }
 function drawerHasChanges() {
   if (!draft) return false;
-  const note = ($('#u-note') || {}).value || '';
-  return draft.dirty || !!note.trim() || !!(updDraft && updDraft.attachments.length);
+  const note = (($('#u-note') || {}).value || '').trim();
+  const e = updDraft && updDraft.editId && state.updates.find(u => u.id === updDraft.editId);
+  if (e) return draft.dirty || note !== String(e.note || '').trim() || updDraft.attachments.length !== (e.attachments || []).length;
+  return draft.dirty || !!note || !!(updDraft && updDraft.attachments.length);
 }
 function closeDrawer(force) {
   if (!force && drawerHasChanges() && !confirm('You have unsaved changes. Close anyway?')) return;
@@ -905,8 +928,8 @@ const opt = (list, v) => list.map(x => `<option ${x === v ? 'selected' : ''}>${e
 function activityList(taskId) {
   const list = updatesFor(taskId);
   if (!list.length) return '<div class="muted">No updates posted yet.</div>';
-  return list.map(u => `<div class="act"><div class="avatar">${esc(initials(u.user))}</div><div style="min-width:0;flex:1">
-    <div class="hd"><b>${fmtDate(uDate(u))}</b><span class="muted">by ${esc(u.user || 'Unknown')}</span>${pill(u.status)}<span class="tag">${clamp100(u.progress)}%</span></div>
+  return '<h4 class="prev-h">Previous updates</h4>' + list.map((u, i) => `<div class="act"><div class="avatar">${esc(initials(u.user))}</div><div style="min-width:0;flex:1">
+    <div class="hd"><b>${fmtDate(uDate(u))}</b><span class="muted">by ${esc(u.user || 'Unknown')}</span>${pill(u.status)}<span class="tag">${clamp100(u.progress)}%</span>${i === 0 ? `<button type="button" class="btn sm" style="margin-left:auto" data-act="upd-edit" data-id="${esc(u.id)}">${icon('edit')}Edit last update</button>` : ''}</div>
     ${u.note ? `<p>${esc(u.note)}</p>` : ''}
     ${(u.attachments || []).length ? `<div class="atts" style="margin-top:8px">${u.attachments.map((a, i) => attTile(a, i, 'log', false, u.id)).join('')}</div>` : ''}
     </div></div>`).join('');
@@ -937,14 +960,31 @@ function progressControl(prefix, value) {
     <span class="pn"><input id="${prefix}-progress-n" type="number" min="0" max="100" step="1" inputmode="numeric" value="${clamp100(value)}" aria-label="Progress percent">%</span></div>`;
 }
 
+function updateBodyHTML(t) {
+  const e = updDraft.editId && state.updates.find(u => u.id === updDraft.editId);
+  const v = e ? { date: uDate(e), status: e.status, progress: e.progress, note: e.note || '' } : { date: todayISO(), status: t.status, progress: t.progress, note: '' };
+  return `<div class="sec"><h3>Task</h3><div class="ttitle">${esc(t.title)}</div>${t.description ? `<div class="tdesc">${esc(t.description)}</div>` : ''}</div>
+  <div class="sec"><h3>${e ? 'Edit last update' : 'Add new update'}</h3>
+    <div class="postbox" id="postbox">
+      ${e ? `<div class="muted">Editing the update by <b>${esc(e.user || 'Unknown')}</b> from ${fmtDate(uDate(e))}</div>` : ''}
+      <div class="grid2"><label class="fld">Update date<input id="u-date" type="date" value="${esc(v.date)}" max="${todayISO()}"></label>
+        <label class="fld">Status<select id="u-status">${opt(STATUSES, v.status)}</select></label></div>
+      <div class="fld">Progress (slider or type a number)${progressControl('u', v.progress)}</div>
+      <label class="fld">Note<textarea id="u-note" rows="3" placeholder="What was done today? Any problem or material needed?">${esc(v.note)}</textarea></label>
+      <div id="upd-atts">${updDraft.attachments.length ? attGrid(updDraft.attachments, true, 'upd') : ''}</div>${uploadButtons('upd')}
+      <div class="tact"><button class="btn primary" data-act="post-update">${e ? 'Save changes' : 'Post update'}</button>${e ? '<button class="btn" data-act="upd-cancel">Cancel edit</button>' : ''}</div></div>
+    <div id="trend">${trendHTML(t.id)}</div>
+    <div id="act-list">${activityList(t.id)}</div></div>`;
+}
+
 function drawerHTML() {
-  const t = draft.task, resp = expandResp(t.responsibles, t.teamId);
+  const t = draft.task, resp = expandResp(t.responsibles, t.teamId), upd = draft.mode === 'update';
   return `<div class="backdrop" data-act="close-drawer"></div>
   <aside class="drawer" role="dialog" aria-label="Task details">
-    <header class="dr-head"><div><small>${draft.isNew ? 'NEW TASK' : esc(t.id)}</small><h2 id="dr-title">${esc(t.title || 'Untitled task')}</h2></div>
+    <header class="dr-head"><div><small>${draft.isNew ? 'NEW TASK' : (upd ? 'UPDATE TASK · ' : 'TASK · ') + esc(t.id)}</small><h2 id="dr-title">${esc(t.title || 'Untitled task')}</h2></div>
       <button class="icon-btn" data-act="close-drawer" aria-label="Close">${icon('x')}</button></header>
     <div class="dr-body" id="dr-body">
-      <div class="sec" id="sec-details"><h3>Details</h3><div class="grid2">
+      ${upd ? updateBodyHTML(t) : `<div class="sec" id="sec-details"><h3>Details</h3><div class="grid2">
         <label class="fld span2">Task title *<input id="f-title" value="${esc(t.title)}"></label>
         <label class="fld">Team<select id="f-team">${allTeams().map(x => `<option value="${esc(x.id)}" ${String(x.id) === String(t.teamId) ? 'selected' : ''}>${esc(x.virtual ? 'Combined (people from all teams)' : x.name)}</option>`).join('')}</select></label>
         <label class="fld">Priority<select id="f-priority">${opt(PRIORITIES, t.priority)}</select></label>
@@ -962,20 +1002,10 @@ function drawerHTML() {
       </div></div>
       <div class="sec"><h3>Drawings &amp; attachments</h3><div id="task-atts">${attGrid(t.attachments, true, 'task')}</div>${uploadButtons('task')}
         <div class="muted" style="margin-top:8px;font-size:12px">Click a file to preview it. Use the arrow on the file to download. Press <b>Save task</b> after attaching.</div></div>
-      ${draft.isNew ? `<div class="muted" style="text-align:center">Save the task first, then you can post daily progress updates.</div>` : `
-      <div class="sec"><h3>Daily progress updates</h3>
-        <div class="postbox">
-          <div class="grid2"><label class="fld">Update date<input id="u-date" type="date" value="${todayISO()}" max="${todayISO()}"></label>
-            <label class="fld">Status<select id="u-status">${opt(STATUSES, t.status)}</select></label></div>
-          <div class="fld">Progress today (slider or type a number)${progressControl('u', t.progress)}</div>
-          <label class="fld">Note<textarea id="u-note" rows="2" placeholder="What was done today? Any problem or material needed?"></textarea></label>
-          <div id="upd-atts"></div>${uploadButtons('upd')}
-          <div><button class="btn primary" data-act="post-update">Post update</button></div></div>
-        <div id="trend">${trendHTML(t.id)}</div>
-        <div id="act-list">${activityList(t.id)}</div></div>`}
+      `}
     </div>
-    <footer class="dr-foot">${draft.isNew ? '' : `<button class="btn danger" data-act="task-delete">${icon('trash')}Delete</button>`}<span class="sp"></span>
-      <button class="btn" data-act="close-drawer">Close</button><button class="btn primary" data-act="task-save">Save task</button></footer>
+    <footer class="dr-foot">${upd ? '<span class="sp"></span><button class="btn" data-act="close-drawer">Close</button>' : `${draft.isNew ? '' : `<button class="btn danger" data-act="task-delete">${icon('trash')}Delete</button>`}<span class="sp"></span>
+      <button class="btn" data-act="close-drawer">Close</button><button class="btn primary" data-act="task-save">Save task</button>`}</footer>
   </aside>`;
 }
 
@@ -1026,22 +1056,40 @@ async function deleteTask() {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+function rerenderDrawer(keepScroll) {
+  const y = ($('#dr-body') || {}).scrollTop || 0;
+  $('#drawer-root').innerHTML = drawerHTML();
+  const b = $('#dr-body'); if (b && keepScroll) b.scrollTop = y;
+}
+function startEditUpdate(id) {
+  const u = state.updates.find(x => x.id === id); if (!u) return;
+  updDraft = { attachments: clone(u.attachments || []), editId: id };
+  rerenderDrawer(false);
+  const pb = $('#postbox'); if (pb && pb.scrollIntoView) pb.scrollIntoView({ block: 'center' });
+}
+function stopEditUpdate() { updDraft = { attachments: [] }; rerenderDrawer(false); }
+
 async function postUpdate(btn) {
   const note = $('#u-note').value.trim(), status = $('#u-status').value, progress = clamp100($('#u-progress').value), date = $('#u-date').value || todayISO();
-  const t = draft.task;
-  if (!note && !updDraft.attachments.length && status === t.status && progress === clamp100(t.progress)) { toast('Write a note, attach a photo, or change progress', 'err'); return; }
+  const t = draft.task, editing = updDraft.editId;
+  if (!editing && !note && !updDraft.attachments.length && status === t.status && progress === clamp100(t.progress)) { toast('Write a note, attach a photo, or change progress', 'err'); return; }
   btn.disabled = true;
   try {
-    const res = await request('addUpdate', { id: uid('U'), taskId: t.id, date, note, status, progress, attachments: updDraft.attachments });
-    state.updates.push(Object.assign({}, res.update, { attachments: res.update.attachments || [] }));
-    const saved = Object.assign({}, res.task, { status: normStatus(res.task.status), attachments: Array.isArray(res.task.attachments) ? res.task.attachments : [] });
-    const i = state.tasks.findIndex(x => x.id === t.id); if (i >= 0) state.tasks[i] = saved;
-    draft.task = Object.assign({}, draft.task, { status: saved.status, progress: saved.progress, actualEnd: saved.actualEnd });
-    $('#f-status').value = saved.status; $('#f-progress').value = saved.progress; $('#f-progress-n').value = saved.progress;
-    $('#f-actual').value = saved.actualEnd || '';
-    $('#u-note').value = ''; updDraft.attachments = []; refreshAtts('upd');
-    $('#act-list').innerHTML = activityList(t.id); $('#trend').innerHTML = trendHTML(t.id);
-    renderView(true); toast(res.queued ? 'Update saved on this device — will sync when online' : 'Update posted', 'ok');
+    const res = editing
+      ? await request('editUpdate', { id: editing, date, note, status, progress, attachments: updDraft.attachments })
+      : await request('addUpdate', { id: uid('U'), taskId: t.id, date, note, status, progress, attachments: updDraft.attachments });
+    const u = Object.assign({}, res.update, { status: normStatus(res.update.status), attachments: res.update.attachments || [] });
+    const ui = state.updates.findIndex(x => x.id === u.id);
+    if (ui >= 0) state.updates[ui] = u; else state.updates.push(u);
+    if (res.task) {
+      const saved = Object.assign({}, res.task, { status: normStatus(res.task.status), attachments: Array.isArray(res.task.attachments) ? res.task.attachments : [] });
+      const i = state.tasks.findIndex(x => x.id === t.id); if (i >= 0) state.tasks[i] = saved;
+      draft.task = clone(saved);
+    }
+    updDraft = { attachments: [] };
+    rerenderDrawer(true);
+    renderView(true);
+    toast(res.queued ? 'Saved on this device — will sync when online' : editing ? 'Update changed' : 'Update posted', 'ok');
   } catch (e) { toast(e.message, 'err'); }
   btn.disabled = false;
 }
@@ -1202,7 +1250,10 @@ document.addEventListener('click', async e => {
     case 'range': { const was = state.range; setRange(d.p === 'custom' ? (was.preset === 'custom' ? was : Object.assign({ preset: 'custom' }, computeRange(was))) : { preset: d.p }); break; }
     case 'sort': state.sort = { key: d.k, dir: state.sort.key === d.k ? -state.sort.dir : 1 }; renderBody(); break;
     case 'open-team': state.filters.team = ''; setView('teams'); setTimeout(() => { const t = document.getElementById('team-' + d.id); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 30); break;
-    case 'task-open': openTask(d.id); break;
+    case 'task-open': openTask(d.id, undefined, 'view'); break;
+    case 'task-update': openTask(d.id, undefined, 'update'); break;
+    case 'upd-edit': startEditUpdate(d.id); break;
+    case 'upd-cancel': stopEditUpdate(); break;
     case 'task-new': openTask(null, d.team); break;
     case 'close-drawer': closeDrawer(); break;
     case 'task-save': saveTask(el); break;

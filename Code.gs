@@ -12,6 +12,10 @@
  * They stay private; the app previews/downloads them through this script.
  *
  * There is no password: anyone who opens the web app enters their name.
+ *
+ * Adding rows directly in the sheet is fine: leave the "id" cell empty and a unique id
+ * is filled in automatically (Tasks → T-001, T-002…, Teams → A, B, C…, Updates → U…).
+ * In the Tasks tab you may type the team's name or letter ("Team B" or "B") in teamId.
  */
 
 const SCHEMA = {
@@ -31,7 +35,9 @@ const ensured_ = {};
 function setup() {
   Object.keys(SCHEMA).forEach(sheet_);
   getFolder_();
-  const msg = 'Setup complete: Teams, Tasks and Updates tabs are ready and the attachments folder exists. Now deploy as a Web app.';
+  installIdTrigger();
+  ensureIds_(20000);
+  const msg = 'Setup complete: tabs are ready, the attachments folder exists and automatic IDs are switched on. Now deploy as a Web app.';
   Logger.log(msg);
   try { SpreadsheetApp.getActiveSpreadsheet().toast(msg, 'Maintenance Tracker', 20); } catch (e) {}
 }
@@ -45,6 +51,7 @@ function doGet(e) {
       case 'file':  return json_(fileData_(q.id, false));
       case 'thumb': return json_(fileData_(q.id, true));
     }
+    ensureIdsThrottled_();   // safety net: gives an id to any row typed in the sheet
     return json_({
       ok: true,
       teams: readAll_('Teams'),
@@ -69,6 +76,7 @@ function doPost(e) {
       case 'saveTeam':    return json_(saveTeam_(d));
       case 'deleteTeam':  return json_(deleteTeam_(d.id));
       case 'addUpdate':   return json_(addUpdate_(d, user));
+      case 'editUpdate':  return json_(editUpdate_(d, user));
       case 'registerUser': return json_(registerUser_(d));
       case 'uploadFile':  return json_(uploadFile_(d));
       case 'bulkImport':  return json_(bulkImport_(d, user));
@@ -171,6 +179,34 @@ function addUpdate_(d, user) {
   }
   upd.attachments = Array.isArray(d.attachments) ? d.attachments : [];
   return { ok: true, update: upd, task: outTask_(outTask) };
+}
+
+/** Edits an existing update (the app only offers this for a task's latest update). The task row follows if it is still the newest. */
+function editUpdate_(d, user) {
+  const old = findById_('Updates', d.id);
+  if (!old) throw new Error('Update not found');
+  const task = findById_('Tasks', old.taskId);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(d.date || '')) ? d.date : (old.date || today_());
+  const p = Math.max(0, Math.min(100, Number(d.progress)));
+  const atts = Array.isArray(d.attachments) ? d.attachments : (old.attachments || []);
+  const upd = {
+    id: old.id, date: date, taskId: old.taskId, taskTitle: old.taskTitle, user: old.user,
+    note: d.note != null ? d.note : old.note, status: d.status || old.status, progress: isNaN(p) ? old.progress : p,
+    attachments: JSON.stringify(atts), timestamp: old.timestamp
+  };
+  upsert_('Updates', upd);
+  let outTask = task;
+  if (task) {
+    const latest = readAll_('Updates')
+      .filter(function (u) { return String(u.taskId) === String(old.taskId) && String(u.id) !== String(old.id); })
+      .reduce(function (m, u) { const x = u.date || String(u.timestamp).slice(0, 10); return x > m ? x : m; }, '');
+    if (date >= latest) {
+      outTask = normTask_({ status: upd.status, progress: upd.progress }, task, user);
+      upsert_('Tasks', outTask);
+    }
+  }
+  upd.attachments = atts;
+  return { ok: true, update: upd, task: outTask ? outTask_(outTask) : null };
 }
 
 function uploadFile_(d) {
@@ -357,4 +393,160 @@ function outTask_(o) {
   const c = Object.assign({}, o);
   if (typeof c.attachments === 'string') { try { c.attachments = JSON.parse(c.attachments); } catch (e) { c.attachments = []; } }
   return c;
+}
+
+
+/* ---------- automatic, unique IDs for rows typed straight into the sheet ---------- */
+// A row counts as a real row when this column has something in it.
+const ID_KEY = { Teams: 'name', Tasks: 'title', Updates: 'taskId' };
+
+/** Menu: Maintenance Tracker → Fill missing IDs now */
+function onOpen() {
+  try {
+    SpreadsheetApp.getUi().createMenu('Maintenance Tracker')
+      .addItem('Fill missing IDs now', 'fillMissingIds')
+      .addItem('Switch on automatic IDs', 'installIdTrigger')
+      .addToUi();
+  } catch (e) {}
+}
+
+function fillMissingIds() {
+  const n = ensureIds_(30000);
+  const msg = n < 0 ? 'The sheet is busy — try again in a moment.' : (n ? n + ' ID(s) added or fixed.' : 'All rows already have unique IDs.');
+  try { SpreadsheetApp.getActiveSpreadsheet().toast(msg, 'Maintenance Tracker', 8); } catch (e) {}
+  Logger.log(msg);
+}
+
+/** Runs the ID filler whenever someone edits or pastes into the sheet. Safe to run more than once. */
+function installIdTrigger() {
+  const has = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'autoFillIds'; });
+  if (!has) ScriptApp.newTrigger('autoFillIds').forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet()).onEdit().create();
+}
+
+/** The edit trigger. */
+function autoFillIds(e) {
+  try {
+    const sh = e && e.range && e.range.getSheet();
+    if (sh && !ID_KEY[sh.getName()]) return;                  // ignore other tabs
+    if (e && e.range && e.range.getLastRow() < 2) return;     // header only
+    ensureIds_(20000);
+  } catch (err) { Logger.log(err); }
+}
+
+function ensureIdsThrottled_() {
+  try {
+    const cache = CacheService.getScriptCache();
+    if (cache.get('ids_checked')) return;
+    if (ensureIds_(4000) >= 0) cache.put('ids_checked', '1', 30);
+  } catch (e) {}
+}
+
+/** Fills/fixes ids on Teams, Tasks and Updates. Returns how many ids were created (−1 if the sheet was busy). */
+function ensureIds_(waitMs) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(waitMs || 20000)) return -1;
+  try {
+    let n = 0;
+    ['Teams', 'Tasks', 'Updates'].forEach(function (name) { n += fillIds_(name); });   // Teams first, so tasks can point at new teams
+    return n;
+  } finally { try { lock.releaseLock(); } catch (x) {} }
+}
+
+function pad3_(n) { return n < 100 ? ('00' + n).slice(-3) : String(n); }
+
+/** Returns a function that hands out ids nobody is using yet. */
+function idGenerator_(name, taken) {
+  if (name === 'Tasks') {
+    let n = 0;
+    Object.keys(taken).forEach(function (k) { const m = /^T-(\d+)$/.exec(k); if (m) n = Math.max(n, Number(m[1])); });
+    return function () { let id; do { n++; id = 'T-' + pad3_(n); } while (taken[id]); taken[id] = true; return id; };
+  }
+  if (name === 'Teams') {
+    let i = 0;
+    return function () { let id; do { id = i < 26 ? String.fromCharCode(65 + i) : 'TM-' + (i - 25); i++; } while (taken[id]); taken[id] = true; return id; };
+  }
+  return function () {
+    let id; do { id = 'U' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); } while (taken[id]);
+    taken[id] = true; return id;
+  };
+}
+
+/** "Team B", "b" or "B" → the real team id. "Combined" → COMBINED. Unknown text is left as typed. */
+function teamRef_(v, teams) {
+  const raw = String(v == null ? '' : v).trim();
+  if (!raw) return raw;
+  const low = raw.toLowerCase();
+  if (low === 'combined') return 'COMBINED';
+  for (let i = 0; i < teams.length; i++) if (String(teams[i].id) === raw) return raw;
+  for (let i = 0; i < teams.length; i++) {
+    const t = teams[i], nm = String(t.name).trim().toLowerCase();
+    if (String(t.id).toLowerCase() === low || nm === low || nm === 'team ' + low) return String(t.id);
+  }
+  return raw;
+}
+
+function fillIds_(name) {
+  const sh = sheet_(name), cols = SCHEMA[name], last = sh.getLastRow();
+  if (last < 2) return 0;
+  const n = last - 1, vals = sh.getRange(2, 1, n, cols.length).getValues();
+  const ci = {}; cols.forEach(function (c, i) { ci[c] = i; });
+  const key = ci[ID_KEY[name]];
+  const now = new Date().toISOString();
+
+  // 1) which ids are already taken; a repeated id (e.g. a copied row) must be replaced
+  const taken = {}, dup = {};
+  vals.forEach(function (r, i) {
+    const id = String(r[0]).trim();
+    if (!id) return;
+    if (taken[id]) dup[i] = true; else taken[id] = true;
+  });
+  const next = idGenerator_(name, taken);
+  const teams = name === 'Tasks' ? readAll_('Teams') : [];
+  let maxOrder = 0;
+  if (name === 'Teams') vals.forEach(function (r) { maxOrder = Math.max(maxOrder, Number(r[ci.order]) || 0); });
+
+  const changed = {};          // column index → true
+  const set = function (r, c, v) { r[c] = v; changed[c] = true; };
+  let created = 0;
+
+  // 2) give every real row an id; fill sensible defaults for brand-new rows
+  vals.forEach(function (r, i) {
+    const id = String(r[0]).trim();
+    const hasData = String(r[key]).trim() !== '';
+    const isNew = !id && hasData;
+    if (isNew || dup[i]) {
+      set(r, 0, next()); created++;
+    } else if (id !== String(r[0])) {
+      set(r, 0, id);                                            // trim stray spaces
+    }
+    if (!isNew) return;
+    if (name === 'Tasks') {
+      if (String(r[ci.status]) === '') set(r, ci.status, 'In Planning');
+      if (String(r[ci.progress]) === '') set(r, ci.progress, 0);
+      if (String(r[ci.priority]) === '') set(r, ci.priority, 'Normal');
+      if (String(r[ci.createdAt]) === '') set(r, ci.createdAt, now);
+      set(r, ci.updatedAt, now); set(r, ci.updatedBy, 'Typed in sheet');
+    } else if (name === 'Teams') {
+      if (String(r[ci.order]) === '') set(r, ci.order, ++maxOrder);
+    } else {
+      if (String(r[ci.date]) === '') set(r, ci.date, today_());
+      if (String(r[ci.user]) === '') set(r, ci.user, 'Typed in sheet');
+      set(r, ci.timestamp, now);
+    }
+  });
+
+  // 3) tasks: accept a team name/letter in teamId and turn it into the team's id
+  if (name === 'Tasks') {
+    vals.forEach(function (r) {
+      const fixed = teamRef_(r[ci.teamId], teams);
+      if (fixed !== String(r[ci.teamId])) set(r, ci.teamId, fixed);
+    });
+  }
+
+  // 4) write back only the columns that changed
+  Object.keys(changed).forEach(function (c) {
+    c = Number(c);
+    sh.getRange(2, c + 1, n, 1).setValues(vals.map(function (r) { return [r[c]]; }));
+  });
+  return created;
 }
