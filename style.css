@@ -340,7 +340,7 @@ td .tact{flex-wrap:nowrap}
 
 /* frozen columns (All tasks) */
 th{z-index:3}
-th.c1,td.c1{position:sticky;left:0;width:112px;min-width:112px;max-width:112px;background:var(--surface);z-index:2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+th.c1,td.c1{position:sticky;left:0;width:112px;min-width:112px;max-width:112px;background:var(--surface);z-index:2;white-space:normal;overflow:hidden}
 th.c2,td.c2{position:sticky;left:112px;width:230px;min-width:230px;max-width:230px;background:var(--surface);z-index:2;box-shadow:3px 0 0 var(--line-strong)}
 th.c1,th.c2{background:var(--surface2);z-index:4}
 tbody tr:hover td.c1,tbody tr:hover td.c2{background:var(--surface2)}
@@ -444,3 +444,16 @@ td .tact4{grid-template-columns:repeat(2,auto);min-width:210px}
 .toast{font-size:17px;padding:14px 22px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.45)}
 
 .rcarry{margin-top:12px;padding:8px 0}
+
+/* frozen Team column: small, up to two lines */
+td.c1 b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:13px;line-height:1.25;word-break:break-word}
+/* task buttons (2 or 3) */
+.tactN{display:flex;gap:8px;flex-wrap:nowrap}
+.tactN .btn{flex:1 1 0;min-width:0;min-height:38px;padding:6px 10px;font-size:14px}
+td .tactN{min-width:230px}
+/* admin mode */
+.admin-strip{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--accent);color:var(--accent-ink);padding:8px 14px;border-radius:10px;margin-bottom:12px;font-size:14.5px}
+.admin-strip button{background:rgba(255,255,255,.22);color:inherit;border:1.5px solid currentColor;border-radius:8px;padding:5px 14px;font-weight:700;cursor:pointer;min-height:34px}
+.ver-line{margin-top:16px;text-align:center;color:var(--muted);font-size:12px;user-select:none;-webkit-user-select:none;padding:8px;cursor:default}
+/* auto-growing Responsible box */
+textarea.grow{min-height:46px;resize:none;overflow:hidden;line-height:1.4}
