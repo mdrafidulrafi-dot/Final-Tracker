@@ -84,16 +84,19 @@ function loadRange() {
 }
 /** The date a task is placed by: start date; if none, due date; if none, the day it was added. */
 const taskDate = t => String(t.startDate || t.endDate || (t.createdAt ? String(t.createdAt).slice(0, 10) : '') || '').slice(0, 10);
+/** True when unfinished tasks from before the chosen period are added to it (only for periods that reach today). */
+function carryOn() { const r = computeRange(state.range); return !!state.carry && !!r.from && (!r.to || r.to >= todayISO()); }
 function inRange(t) {
   const r = computeRange(state.range);
   if (!r.from && !r.to) return true;
   const d = taskDate(t); if (!d) return false;
-  return (!r.from || d >= r.from) && (!r.to || d <= r.to);
+  if ((!r.from || d >= r.from) && (!r.to || d <= r.to)) return true;
+  return carryOn() && d < r.from && t.status !== 'Completed';
 }
 const rangeTasks = () => state.tasks.filter(inRange);
 function rangeShort() {
   const c = computeRange(state.range);
-  return !c.from && !c.to ? 'all time' : `${c.from ? fmtDate(c.from) : 'any'} – ${c.to ? fmtDate(c.to) : 'any'}`;
+  return !c.from && !c.to ? 'all time' : `${c.from ? fmtDate(c.from) : 'any'} – ${c.to ? fmtDate(c.to) : 'any'}` + (carryOn() ? ' + unfinished earlier tasks' : '');
 }
 const byStart = (a, c) => { const x = taskDate(a), y = taskDate(c); if (!x !== !y) return x ? -1 : 1; return y.localeCompare(x) || String(a.title).localeCompare(String(c.title)); };   // newest first, undated last
 
@@ -127,7 +130,7 @@ const state = {
   teams: [], tasks: [], updates: [],
   view: 'dashboard', loading: true, lastSync: null,
   filters: { q: '', team: '', status: '', overdue: false },
-  range: loadRange(), rangeOpen: false, openT: {}, bin: [],
+  range: loadRange(), carry: (() => { try { return localStorage.getItem('mmt_carry') !== '0'; } catch (e) { return true; } })(), rangeOpen: false, openT: {}, bin: [],
   sort: { key: 'startDate', dir: -1 }
 };
 const auth = { user: '', pw: '' };
@@ -169,11 +172,11 @@ const demo = {
 function demoCall(action, data) {
   const d = demo.get();
   const now = new Date().toISOString();
-  const norm = (t, ex) => {
+  const norm = (t, ex, onDate) => {
     const o = Object.assign({}, ex || {}, t);
     o.status = normStatus(o.status);
     o.progress = clamp100(o.progress);
-    if (o.status === 'Completed') { o.progress = 100; if (!o.actualEnd) o.actualEnd = todayISO(); }
+    if (o.status === 'Completed') { o.progress = 100; if (!o.actualEnd) o.actualEnd = onDate || todayISO(); } else o.actualEnd = '';
     if (!o.createdAt) o.createdAt = now;
     o.updatedAt = now; o.updatedBy = auth.user || 'Demo user';
     return o;
@@ -202,7 +205,7 @@ function demoCall(action, data) {
       const upd = { id: uid('U'), date, taskId: data.taskId, taskTitle: d.tasks[i].title, user: auth.user || 'Demo user', note: data.note || '',
                     status: data.status, progress: Number(data.progress), attachments: data.attachments || [], timestamp: now };
       d.updates.push(upd);
-      if (date >= latest) d.tasks[i] = norm({ status: upd.status, progress: upd.progress }, d.tasks[i]);
+      if (date >= latest) d.tasks[i] = norm({ status: upd.status, progress: upd.progress }, d.tasks[i], date);
       demo.put(d); return { ok: true, update: upd, task: d.tasks[i] };
     }
     case 'editUpdate': {
@@ -212,7 +215,7 @@ function demoCall(action, data) {
       d.updates[ui] = upd;
       const ti = d.tasks.findIndex(t => t.id === old.taskId);
       const latest = d.updates.filter(u => u.taskId === old.taskId && u.id !== old.id).reduce((m, u) => uDate(u) > m ? uDate(u) : m, '');
-      if (ti >= 0 && date >= latest) d.tasks[ti] = norm({ status: upd.status, progress: upd.progress }, d.tasks[ti]);
+      if (ti >= 0 && date >= latest) d.tasks[ti] = norm({ status: upd.status, progress: upd.progress }, d.tasks[ti], date);
       demo.put(d); return { ok: true, update: upd, task: d.tasks[ti] };
     }
     case 'uploadFile': {
@@ -233,11 +236,33 @@ const writeQueue = () => { try { localStorage.setItem(QKEY, JSON.stringify(queue
 const isOffline = () => navigator.onLine === false;
 const isNetErr = e => !!e && (e.name === 'AbortError' || e instanceof TypeError || /Failed to fetch|NetworkError|Load failed/i.test(e.message || ''));
 
+const olderUpd = {};   // taskId -> updates older than the 30-day window, fetched when a task's updates are opened
+function mergeOlder() {
+  const have = new Set(state.updates.map(u => u.id));
+  Object.keys(olderUpd).forEach(k => olderUpd[k].forEach(u => { if (!have.has(u.id)) { state.updates.push(u); have.add(u.id); } }));
+}
+async function loadAllUpdates(taskId) {
+  if (DEMO || olderUpd[taskId] || isOffline()) return;
+  olderUpd[taskId] = [];
+  try {
+    const d = await fetchJSON(`${CFG.API_URL}?action=taskUpdates&id=${encodeURIComponent(taskId)}&pw=${encodeURIComponent(auth.pw)}`, {}, 30000);
+    if (!d || !d.ok) { delete olderUpd[taskId]; return; }
+    olderUpd[taskId] = (d.updates || []).map(u => Object.assign({}, u, { status: normStatus(u.status), attachments: Array.isArray(u.attachments) ? u.attachments : [] }));
+    mergeOlder();
+    if (draft && draft.task.id === taskId) {
+      const ro = draft.mode === 'viewupd', al = $('#act-list'), tr = $('#trend');
+      if (al) al.innerHTML = activityList(taskId, ro);
+      if (tr) tr.innerHTML = trendHTML(taskId);
+    }
+  } catch (e) { delete olderUpd[taskId]; }
+}
+
 function applyData(d) {
   state.teams = (d.teams || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
   const allT = (d.tasks || []).map(t => Object.assign({}, t, { status: normStatus(t.status), attachments: Array.isArray(t.attachments) ? t.attachments : [] }));
   state.tasks = allT.filter(t => !t.deletedAt); state.bin = allT.filter(t => t.deletedAt);
   state.updates = (d.updates || []).map(u => Object.assign({}, u, { status: normStatus(u.status), attachments: Array.isArray(u.attachments) ? u.attachments : [] }));
+  mergeOlder();
 }
 function saveCache() {
   if (DEMO) return;
@@ -272,6 +297,7 @@ const api = {
     if (DEMO) { const d = demo.get(); return { ok: true, teams: d.teams, tasks: d.tasks, updates: d.updates }; }
     return fetchJSON(`${CFG.API_URL}?action=getAll&pw=${encodeURIComponent(auth.pw)}`, {}, 30000);
   },
+  async ver() { return fetchJSON(`${CFG.API_URL}?action=ver&pw=${encodeURIComponent(auth.pw)}`, {}, 15000); },
   async call(action, data, user, ms) {
     if (DEMO) { try { return demoCall(action, data); } catch (e) { return { ok: false, error: e.message }; } }
     return fetchJSON(CFG.API_URL, { method: 'POST', body: JSON.stringify({ action, user: user === undefined ? auth.user : user, password: auth.pw, data }) },
@@ -282,12 +308,12 @@ const api = {
 /** Works out the result of a change locally (same rules as the Apps Script) so the app keeps working offline. */
 function localApply(action, data) {
   const now = new Date().toISOString();
-  const norm = (t, ex) => {
+  const norm = (t, ex, onDate) => {
     const o = Object.assign({}, ex || {}, t);
     o.id = String(o.id); o.status = normStatus(o.status);
     o.daysRequired = (o.daysRequired === '' || o.daysRequired == null) ? '' : Number(o.daysRequired);
     o.progress = clamp100(o.progress);
-    if (o.status === 'Completed') { o.progress = 100; if (!o.actualEnd) o.actualEnd = todayISO(); }
+    if (o.status === 'Completed') { o.progress = 100; if (!o.actualEnd) o.actualEnd = onDate || todayISO(); } else o.actualEnd = '';
     if (!o.createdAt) o.createdAt = now;
     o.updatedAt = now; o.updatedBy = auth.user || o.updatedBy || '';
     o.attachments = Array.isArray(t.attachments) ? t.attachments : ((ex && ex.attachments) || []);
@@ -311,7 +337,7 @@ function localApply(action, data) {
       const status = data.status || task.status, p = clamp100(data.progress);
       const upd = { id: data.id || uid('U'), date, taskId: String(data.taskId), taskTitle: task.title, user: auth.user, note: data.note || '',
                     status, progress: p, attachments: data.attachments || [], timestamp: now };
-      return { ok: true, update: upd, task: date >= latest ? norm({ status, progress: p }, task) : task };
+      return { ok: true, update: upd, task: date >= latest ? norm({ status, progress: p }, task, date) : task };
     }
     case 'editUpdate': {
       const old = state.updates.find(u => u.id === data.id); if (!old) throw new Error('Update not found');
@@ -320,7 +346,7 @@ function localApply(action, data) {
       const status = data.status || old.status, p = clamp100(data.progress);
       const upd = Object.assign({}, old, { date, note: data.note != null ? data.note : old.note, status, progress: p, attachments: data.attachments || old.attachments || [] });
       const latest = state.updates.filter(u => String(u.taskId) === String(old.taskId) && u.id !== old.id).reduce((m, u) => uDate(u) > m ? uDate(u) : m, '');
-      return { ok: true, update: upd, task: task && date >= latest ? norm({ status, progress: p }, task) : task };
+      return { ok: true, update: upd, task: task && date >= latest ? norm({ status, progress: p }, task, date) : task };
     }
   }
   return { ok: false, error: 'Unknown action' };
@@ -401,7 +427,7 @@ async function load(silent) {
     if (!DEMO && queue.length) { await flushQueue(); if (queue.length) throw new TypeError('Failed to fetch'); }   // never overwrite unsent changes
     const d = await api.load();
     if (!d.ok) throw new Error(d.error || 'Server error');
-    applyData(d);
+    applyData(d); state.ver = d.v || 0;
     state.lastSync = new Date(); state.loading = false;
     saveCache(); setSync('ok'); updateNet();
     return true;
@@ -490,6 +516,7 @@ function start() {
   refreshTimer = setInterval(async () => {
     if (queue.length) await flushQueue();
     if (document.hidden || $('#drawer-root').children.length || $('#modal-root').children.length || $('#lightbox-root').children.length) return;
+    if (!DEMO && !isOffline() && state.ver) { try { const r = await api.ver(); if (r && r.ok && String(r.v) === String(state.ver)) return; } catch (e) {} }   // nothing changed → skip the heavy reload
     if (await load(true)) renderView(true);
   }, Math.max(15, CFG.REFRESH_SECONDS) * 1000);
 }
@@ -588,13 +615,14 @@ function rangeBar() {
   const label = r.preset === 'ym' ? r.ym : ((RANGE_PRESETS.find(p => p[0] === r.preset) || [])[1] || 'Custom');
   return `<div class="card rbar">
     <button type="button" class="rtoggle" data-act="range-toggle" aria-expanded="${open}">
-      <span><b>Filter by start date</b> · ${esc(label)}</span>
+      <span><b>Filter by start date</b> · ${esc(label)}${carryOn() ? ' <span class="muted">+ earlier open</span>' : ''}</span>
       <span class="rcount"><b>${n}</b> of ${state.tasks.length} tasks <i class="car">▾</i></span></button>
     ${open ? `<div class="rbody">
       <div class="rhead"><span class="rinfo">${all ? 'Showing all tasks' : 'Tasks starting <b>' + rangeShort() + '</b>'}</span></div>
       <div class="rchips">${RANGE_PRESETS.map(([k, lb]) => `<button type="button" class="rchip ${r.preset === k ? 'on' : ''}" data-act="range" data-p="${k}">${lb}</button>`).join('')}
         <label class="rmonth">Pick month <input type="month" id="rng-ym" value="${r.preset === 'ym' ? esc(r.ym) : ''}"></label></div>
       ${r.preset === 'custom' ? `<div class="rcustom"><label class="fld">From<input type="date" id="rng-from" value="${esc(r.from || '')}"></label><label class="fld">To<input type="date" id="rng-to" value="${esc(r.to || '')}"></label></div>` : ''}
+      ${all ? '' : `<label class="chk rcarry"><input type="checkbox" id="rng-carry" ${state.carry ? 'checked' : ''}> Include unfinished tasks from earlier months</label>`}
       ${all ? '' : '<div class="rnote">Tasks with no start date are placed by their due date (or the day they were added).</div>'}
     </div>` : ''}
   </div>`;
@@ -814,17 +842,25 @@ const blobCache = new Map();
 const isImg = a => /^image\//.test(a.mime || '');
 
 /** Fetches a file (or its thumbnail) through the Apps Script backend and returns a blob URL. */
+const THUMBS = 'mmt-thumbs', THUMB_MAX = 100;
+async function thumbGet(id) { try { if (!window.caches) return null; const r = await (await caches.open(THUMBS)).match('/thumb/' + encodeURIComponent(id)); return r ? await r.blob() : null; } catch (e) { return null; } }
+async function thumbPut(id, blob) {
+  try { const c = await caches.open(THUMBS); await c.put('/thumb/' + encodeURIComponent(id), new Response(blob)); const ks = await c.keys(); for (let i = 0; i < ks.length - THUMB_MAX; i++) await c.delete(ks[i]); } catch (e) {}
+}
 function fetchFileBlob(a, thumb) {
   if (a.url && String(a.url).startsWith('data:')) return Promise.resolve({ url: a.url, mime: a.mime });   // demo mode
   const key = (thumb ? 't:' : 'f:') + a.id;
   if (blobCache.has(key)) return blobCache.get(key);
   const p = (async () => {
+    if (thumb) { const hit = await thumbGet(a.id); if (hit) return { url: URL.createObjectURL(hit), mime: hit.type || a.mime }; }
     const r = await fetch(`${CFG.API_URL}?action=${thumb ? 'thumb' : 'file'}&id=${encodeURIComponent(a.id)}&pw=${encodeURIComponent(auth.pw)}`);
     const d = await r.json();
     if (!d.ok || !d.base64) throw new Error(d.error || 'File not available');
     const bin = atob(d.base64), arr = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    return { url: URL.createObjectURL(new Blob([arr], { type: d.mime || a.mime || 'application/octet-stream' })), mime: d.mime || a.mime };
+    const blob = new Blob([arr], { type: d.mime || a.mime || 'application/octet-stream' });
+    if (thumb) thumbPut(a.id, blob);
+    return { url: URL.createObjectURL(blob), mime: d.mime || a.mime };
   })();
   blobCache.set(key, p);
   p.catch(() => blobCache.delete(key));
@@ -957,6 +993,7 @@ function openTask(id, teamId, mode, reuse) {
   updDraft = { attachments: [] };
   $('#drawer-root').innerHTML = drawerHTML();
   if (!ex) { const t = $('#f-title'); if (t) t.focus(); }
+  else if (draft.mode === 'viewupd' || draft.mode === 'update') loadAllUpdates(ex.id);
 }
 function drawerHasChanges() {
   if (!draft) return false;
@@ -994,7 +1031,7 @@ function activityList(taskId, ro) {
     <div class="hd"><b>${fmtDate(uDate(u))}</b><span class="muted">by ${esc(u.user || 'Unknown')}</span>${pill(u.status)}<span class="tag">${clamp100(u.progress)}%</span>${i === 0 && !ro ? `<button type="button" class="btn sm" style="margin-left:auto" data-act="upd-edit" data-id="${esc(u.id)}">${icon('edit')}Edit last update</button>` : ''}</div>
     ${u.note ? `<p>${esc(u.note)}</p>` : ''}
     ${(u.attachments || []).length ? `<div class="atts" style="margin-top:8px">${u.attachments.map((a, i) => attTile(a, i, 'log', false, u.id)).join('')}</div>` : ''}
-    </div></div>`).join('') + '<div class="muted" style="font-size:12.5px;margin-top:8px">Showing updates from the last 30 days.</div>';
+    </div></div>`).join('') + (DEMO || olderUpd[taskId] ? '' : '<div class="muted" style="font-size:12.5px;margin-top:8px">Showing the last 30 days — loading older updates…</div>');
 }
 
 function trendHTML(taskId) {
@@ -1063,7 +1100,7 @@ function viewUpdHTML(t) {
   const list = updatesFor(t.id);
   return `<div class="sec"><h3>Task</h3><div class="ttitle">${esc(t.title)}</div>
       <div class="row" style="display:flex;gap:8px;align-items:center;margin-top:8px">${pill(t.status)}<b class="mono">${clamp100(t.progress)}%</b></div></div>
-    <div class="sec"><h3>Updates</h3>${list.length ? `<div id="trend">${trendHTML(t.id)}</div>` : ''}
+    <div class="sec"><h3>Updates</h3><div id="trend">${trendHTML(t.id)}</div>
       <div id="act-list">${activityList(t.id, true)}</div></div>`;
 }
 
@@ -1303,6 +1340,15 @@ function applyTaskAutoRules(src) {
     const s = v('#f-status').value;
     if (s === 'Completed') { setProg(100); if (!v('#f-actual').value) v('#f-actual').value = todayISO(); }
     else { v('#f-actual').value = ''; if (s === 'In Planning') setProg(0); else if (clamp100(v('#f-progress').value) === 100) setProg(90); }
+  } else if (src === 'actual') {
+    const a = v('#f-actual').value, st = v('#f-start').value;
+    if (a) {
+      v('#f-status').value = 'Completed'; setProg(100);
+      if (st && a < st) toast('Warning: Actual end is before the start date', 'err');
+      else if (a > todayISO()) toast('Warning: Actual end is in the future', 'err');
+    } else if (v('#f-status').value === 'Completed') {
+      v('#f-status').value = 'In Progress'; if (clamp100(v('#f-progress').value) === 100) setProg(90);
+    }
   } else if (src === 'days' || src === 'start') {
     const days = Number(v('#f-days').value), st = v('#f-start').value;
     if (days > 0 && st) v('#f-end').value = addDays(st, Math.max(0, Math.ceil(days) - 1));
@@ -1326,6 +1372,7 @@ function syncProgress(prefix, from) {
   else {
     const st = $('#u-status');
     if (v === 100) st.value = 'Completed';
+    else if (v < 100 && st.value === 'Completed') st.value = v > 0 ? 'In Progress' : 'In Planning';
     else if (v > 0 && st.value === 'In Planning') st.value = 'In Progress';
   }
 }
@@ -1350,13 +1397,15 @@ document.addEventListener('change', e => {
   else if (id === 'flt-status') { state.filters.status = e.target.value; renderBody(); }
   else if (id === 'flt-over') { state.filters.overdue = e.target.checked; renderBody(); }
   else if (id === 'rng-ym') { state.rangeOpen = false; setRange(e.target.value ? { preset: 'ym', ym: e.target.value } : { preset: 'month' }); }
+  else if (id === 'rng-carry') { state.carry = e.target.checked; try { localStorage.setItem('mmt_carry', state.carry ? '1' : '0'); } catch (x) {} renderView(true); }
   else if (id === 'rng-from' || id === 'rng-to') setRange({ preset: 'custom', from: $('#rng-from').value, to: $('#rng-to').value });
   else if (id === 'f-status') applyTaskAutoRules('status');
   else if (id === 'f-start') applyTaskAutoRules('start');
   else if (id === 'f-end') applyTaskAutoRules('end');
+  else if (id === 'f-actual') applyTaskAutoRules('actual');
   else if (id === 'f-team') { const c = $('#resp-chips'), r = $('#f-resp'); if (c) { r.value = expandResp(r.value, e.target.value); c.innerHTML = respChips(e.target.value, r.value); } }
   else if (id === 'f-progress-n' || id === 'u-progress-n') { e.target.value = clamp100(e.target.value); syncProgress(id[0], 'n'); }
-  else if (id === 'u-status') { const s = e.target.value; if (s === 'Completed') { $('#u-progress').value = 100; $('#u-progress-n').value = 100; } else if (s === 'In Planning') { $('#u-progress').value = 0; $('#u-progress-n').value = 0; } }
+  else if (id === 'u-status') { const s = e.target.value; if (s === 'Completed') { $('#u-progress').value = 100; $('#u-progress-n').value = 100; } else if (s === 'In Planning') { $('#u-progress').value = 0; $('#u-progress-n').value = 0; } else if (clamp100($('#u-progress').value) === 100) { $('#u-progress').value = 90; $('#u-progress-n').value = 90; } }
   else if (e.target.type === 'file' && e.target.dataset.scope) handleFiles(e.target);
 });
 
@@ -1386,7 +1435,7 @@ document.addEventListener('click', async e => {
     case 'task-new': openTask(null, d.team); break;
     case 'team-toggle': { const cur = state.openT[d.id] !== undefined ? state.openT[d.id] : filtersActive(); state.openT[d.id] = !cur; renderBody(); break; }
     case 'teams-all': { state.openT = {}; boardTeams().forEach(t => { state.openT[t.id] = d.v === '1'; }); renderBody(); break; }
-    case 'clear-date': { const i = $('#' + d.for); if (i) { i.value = ''; if (draft) draft.dirty = true; } break; }
+    case 'clear-date': { const i = $('#' + d.for); if (i) { i.value = ''; if (draft) draft.dirty = true; if (d.for === 'f-actual') applyTaskAutoRules('actual'); } break; }
     case 'close-drawer': closeDrawer(); break;
     case 'task-save': saveTask(el); break;
     case 'task-delete': deleteTask(); break;
@@ -1428,7 +1477,7 @@ document.addEventListener('click', async e => {
         if (queue.length) await flushQueue();
         await Promise.all(['index.html', 'style.css', 'config.js', 'seed.js', 'app.js', 'sw.js', 'manifest.json'].map(f => fetch(f, { cache: 'reload' }).catch(() => {})));
         if (navigator.serviceWorker) { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(r => r.unregister())); }
-        if (window.caches) { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); }
+        if (window.caches) { const ks = await caches.keys(); await Promise.all(ks.filter(k => k.startsWith('mmt-shell')).map(k => caches.delete(k))); }
       } catch (x) {}
       location.reload(); break;
     }

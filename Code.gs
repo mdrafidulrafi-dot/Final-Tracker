@@ -30,6 +30,7 @@ const NUMERIC = { daysRequired: 1, progress: 1, order: 1, visits: 1 };
 const JSON_COLS = { attachments: 1 };
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 const ensured_ = {};
+const TZ = 'Asia/Dhaka';   // all dates are worked out in this timezone, whatever the script's own setting is
 const APP_PASSWORD = '2468';   // shared password (everyone also enters their name). Change it here, then redeploy.
 
 /* ---------- one-time setup ---------- */
@@ -37,6 +38,7 @@ function setup() {
   Object.keys(SCHEMA).forEach(sheet_);
   getFolder_();
   installIdTrigger();
+  installBackupTrigger();
   ensureIds_(20000);
   const msg = 'Setup complete: tabs are ready, the attachments folder exists and automatic IDs are switched on. Now deploy as a Web app.';
   Logger.log(msg);
@@ -52,10 +54,13 @@ function doGet(e) {
       case 'ping':  return json_({ ok: true, app: 'maintenance-tracker' });
       case 'file':  return json_(fileData_(q.id, false));
       case 'thumb': return json_(fileData_(q.id, true));
+      case 'ver':   return json_({ ok: true, v: ver_() });
+      case 'taskUpdates': return json_({ ok: true, updates: readAll_('Updates').filter(function (u) { return String(u.taskId) === String(q.id); }) });
     }
+    const v = ver_();        // read first, so a change made while we read is never missed
     ensureIdsThrottled_();   // safety net: gives an id to any row typed in the sheet
     return json_({
-      ok: true,
+      ok: true, v: v,
       teams: readAll_('Teams'),
       tasks: readAll_('Tasks'),
       updates: recentUpdates_(readAll_('Updates'))
@@ -67,7 +72,7 @@ function doGet(e) {
 
 /** Only the last 30 days of daily updates are sent to the app (keeps it fast). */
 function recentUpdates_(rows) {
-  const cutoff = Utilities.formatDate(new Date(Date.now() - 30 * 864e5), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const cutoff = Utilities.formatDate(new Date(Date.now() - 30 * 864e5), TZ, 'yyyy-MM-dd');
   return rows.filter(function (u) { return String(u.date || String(u.timestamp).slice(0, 10)) >= cutoff; });
 }
 
@@ -97,6 +102,7 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: String(err && err.message || err) });
   } finally {
+    try { if (req.action !== 'registerUser') bumpVer_(); } catch (x) {}
     try { lock.releaseLock(); } catch (x) {}
   }
 }
@@ -149,7 +155,7 @@ function saveTeam_(t) {
 }
 
 function deleteTeam_(id) {
-  const has = readAll_('Tasks').some(function (t) { return String(t.teamId) === String(id); });
+  const has = readAll_('Tasks').some(function (t) { return String(t.teamId) === String(id) && !t.deletedAt; });
   if (has) throw new Error('This team still has tasks. Move or delete them first.');
   deleteRow_('Teams', id);
   return { ok: true };
@@ -186,7 +192,7 @@ function addUpdate_(d, user) {
 
   let outTask = task;
   if (date >= latest) {
-    const merged = normTask_({ status: status, progress: progress }, task, user);
+    const merged = normTask_({ status: status, progress: progress }, task, user, date);
     upsert_('Tasks', merged);
     outTask = merged;
   }
@@ -215,7 +221,7 @@ function editUpdate_(d, user) {
       .filter(function (u) { return String(u.taskId) === String(old.taskId) && String(u.id) !== String(old.id); })
       .reduce(function (m, u) { const x = u.date || String(u.timestamp).slice(0, 10); return x > m ? x : m; }, '');
     if (date >= latest) {
-      outTask = normTask_({ status: upd.status, progress: upd.progress }, task, user);
+      outTask = normTask_({ status: upd.status, progress: upd.progress }, task, user, date);
       upsert_('Tasks', outTask);
     }
   }
@@ -271,12 +277,36 @@ function bulkImport_(d, user) {
   return { ok: true, teams: teams.length, tasks: tasks.length };
 }
 
+/* ---------- change stamp: lets the app skip a full reload when nothing changed ---------- */
+function ver_() { return PropertiesService.getScriptProperties().getProperty('DATA_VER') || '0'; }
+function bumpVer_() { PropertiesService.getScriptProperties().setProperty('DATA_VER', String(Date.now())); }
+
+/* ---------- monthly backup of this spreadsheet (kept in Drive, newest 12 copies) ---------- */
+function monthlyBackup() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const p = PropertiesService.getScriptProperties();
+  let folder = null;
+  const fid = p.getProperty('BACKUP_FOLDER_ID');
+  if (fid) { try { folder = DriveApp.getFolderById(fid); } catch (e) {} }
+  if (!folder) { folder = DriveApp.createFolder('Maintenance Tracker Backups'); p.setProperty('BACKUP_FOLDER_ID', folder.getId()); }
+  DriveApp.getFileById(ss.getId()).makeCopy('Backup ' + today_() + ' - ' + ss.getName(), folder);
+  const files = [], it = folder.getFiles();
+  while (it.hasNext()) files.push(it.next());
+  files.sort(function (a, b) { return b.getDateCreated() - a.getDateCreated(); });
+  files.slice(12).forEach(function (f) { f.setTrashed(true); });
+  try { ss.toast('Backup saved in the "Maintenance Tracker Backups" Drive folder.', 'Maintenance Tracker', 8); } catch (e) {}
+}
+function installBackupTrigger() {
+  const has = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'monthlyBackup'; });
+  if (!has) ScriptApp.newTrigger('monthlyBackup').timeBased().onMonthDay(1).atHour(2).create();
+}
+
 /* ---------- helpers ---------- */
 function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
-function today_() { return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'); }
+function today_() { return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd'); }
 
 function getFolder_() {
   const p = PropertiesService.getScriptProperties();
@@ -308,6 +338,15 @@ function sheet_(name) {
   const head = sh.getRange(1, 1, 1, width).getValues()[0].map(String);
   if (cols.every(function (c, i) { return head[i] === c; })) return sh;
 
+  let hl = head.length;
+  while (hl > 0 && head[hl - 1] === '') hl--;
+  if (hl < cols.length && cols.slice(0, hl).every(function (c, i) { return head[i] === c; })) {
+    if (sh.getMaxColumns() < cols.length) sh.insertColumnsAfter(sh.getMaxColumns(), cols.length - sh.getMaxColumns());
+    sh.getRange(1, hl + 1, sh.getMaxRows(), cols.length - hl).setNumberFormat('@');
+    sh.getRange(1, hl + 1, 1, cols.length - hl).setValues([cols.slice(hl)]).setFontWeight('bold').setBackground('#1f2937').setFontColor('#ffffff');
+    return sh;
+  }
+
   head.forEach(function (h) {
     if (h && cols.indexOf(h) < 0) throw new Error('Tab "' + name + '" has an unexpected column "' + h + '". Restore the original header names.');
   });
@@ -332,7 +371,7 @@ function sheet_(name) {
 function readAll_(name) {
   const sh = sheet_(name), cols = SCHEMA[name], n = sh.getLastRow() - 1;
   if (n < 1) return [];
-  const tz = Session.getScriptTimeZone();
+  const tz = TZ;
   const vals = sh.getRange(2, 1, n, cols.length).getValues();
   const rows = vals.filter(function (r) { return r[0] !== ''; }).map(function (r) {
     const o = {};
@@ -384,7 +423,7 @@ function deleteRow_(name, id) {
   }
 }
 
-function normTask_(t, existing, user) {
+function normTask_(t, existing, user, onDate) {
   const now = new Date().toISOString();
   const o = Object.assign({}, existing || {}, t);
   o.id = String(o.id);
@@ -393,7 +432,9 @@ function normTask_(t, existing, user) {
   o.progress = Math.max(0, Math.min(100, Number(o.progress) || 0));
   if (o.status === 'Completed') {
     o.progress = 100;
-    if (!o.actualEnd) o.actualEnd = today_();
+    if (!o.actualEnd) o.actualEnd = onDate || today_();
+  } else {
+    o.actualEnd = '';          // a task that is not completed has no actual end date
   }
   if (!o.createdAt) o.createdAt = now;
   o.updatedAt = now;
@@ -420,6 +461,7 @@ function onOpen() {
     SpreadsheetApp.getUi().createMenu('Maintenance Tracker')
       .addItem('Fill missing IDs now', 'fillMissingIds')
       .addItem('Switch on automatic IDs', 'installIdTrigger')
+      .addItem('Back up the sheet now', 'monthlyBackup')
       .addToUi();
   } catch (e) {}
 }
@@ -439,6 +481,7 @@ function installIdTrigger() {
 
 /** The edit trigger. */
 function autoFillIds(e) {
+  try { bumpVer_(); } catch (x) {}
   try {
     const sh = e && e.range && e.range.getSheet();
     if (sh && !ID_KEY[sh.getName()]) return;                  // ignore other tabs

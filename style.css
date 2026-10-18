@@ -255,7 +255,7 @@ td .bar{width:90px}
 #lightbox-root .lb{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.88);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:20px}
 .lb img{max-width:100%;max-height:82vh;border-radius:8px;background:#222}
 .lb a{color:#fff}
-#toasts{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:70;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;width:max-content;max-width:94vw}
+#toasts{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:70;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;width:max-content;max-width:94vw}
 .toast{background:var(--side);color:#fff;padding:12px 18px;border-radius:11px;box-shadow:0 8px 30px rgba(0,0,0,.35);animation:slide .2s;font-size:15.5px;font-weight:600}
 .toast.err{background:#b91c1c}.toast.ok{background:#15803d}
 
@@ -439,3 +439,8 @@ td .tact4{grid-template-columns:repeat(2,auto);min-width:210px}
 .team:not(.open) .team-sum{border-bottom:0}
 .team-head h2 .car{font-size:15px;color:var(--muted)}
 .team.open .team-head h2 .car{transform:rotate(180deg)}
+
+/* centered notifications */
+.toast{font-size:17px;padding:14px 22px;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.45)}
+
+.rcarry{margin-top:12px;padding:8px 0}
