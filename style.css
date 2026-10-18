@@ -396,3 +396,21 @@ tbody tr:hover td.c1,tbody tr:hover td.c2{background:var(--surface2)}
   .tbtns .rep-btn{flex:0 0 46px}
 }
 @media (max-width:560px){.tbtns .btn:not(.rep-btn) svg{display:none}}
+
+/* team members: small, wrapped under the team header */
+.team-head{flex-wrap:wrap}
+.team-head .members{flex:1 1 100%;gap:4px;margin-top:0}
+.member{font-size:11.5px;line-height:1.35;padding:1px 8px;border-width:1px}
+/* four task buttons */
+.tact4{display:grid;grid-template-columns:repeat(4,auto);gap:8px;justify-content:start}
+.tact4 .btn{min-height:38px;padding:6px 12px;font-size:14px}
+td .tact4{grid-template-columns:repeat(2,auto);min-width:210px}
+@media (max-width:560px){.tact4{grid-template-columns:1fr 1fr}.tact4 .btn{width:100%}}
+/* read-only task view */
+.kvs{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-bottom:12px}
+.kv small{display:block;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px}
+.kv>div{font-size:16px;word-break:break-word}
+.ro-text{white-space:pre-wrap}
+.prog-ro{display:flex;align-items:center;gap:10px}
+.prog-ro .bar{flex:1}
+.sec>.kv{margin-top:10px}

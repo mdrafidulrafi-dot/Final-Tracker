@@ -95,7 +95,7 @@ function rangeShort() {
   const c = computeRange(state.range);
   return !c.from && !c.to ? 'all time' : `${c.from ? fmtDate(c.from) : 'any'} – ${c.to ? fmtDate(c.to) : 'any'}`;
 }
-const byStart = (a, c) => { const x = taskDate(a), y = taskDate(c); if (!x !== !y) return x ? -1 : 1; return x.localeCompare(y) || String(a.title).localeCompare(String(c.title)); };
+const byStart = (a, c) => { const x = taskDate(a), y = taskDate(c); if (!x !== !y) return x ? -1 : 1; return y.localeCompare(x) || String(a.title).localeCompare(String(c.title)); };   // newest first, undated last
 
 /* ---- responsible people: "All" always means every member's name ---- */
 function teamNames(teamId) {
@@ -128,7 +128,7 @@ const state = {
   view: 'dashboard', loading: true, lastSync: null,
   filters: { q: '', team: '', status: '', overdue: false },
   range: loadRange(), rangeOpen: false, bin: [],
-  sort: { key: 'startDate', dir: 1 }
+  sort: { key: 'startDate', dir: -1 }
 };
 const auth = { user: '', pw: '' };
 let draft = null;      // task drawer draft  { isNew, dirty, task }
@@ -670,7 +670,7 @@ function viewDashboard(b) {
       </div>
       <div class="card panel"><h3>Recent updates</h3>
         <div class="att-list">${recent.length ? recent.map(u => { const t = taskById(u.taskId); return `
-          <div class="att-item" data-act="task-update" data-id="${esc(u.taskId)}">
+          <div class="att-item" data-act="task-viewupd" data-id="${esc(u.taskId)}">
             <div class="avatar" style="background:var(--side);color:#fff;flex:none">${esc(initials(u.user))}</div>
             <div style="min-width:0"><div class="t">${esc(t ? t.title : 'Deleted task')}</div>
             <small>${esc(u.user || '')} · ${fmtDate(uDate(u))} · ${esc(u.status)} ${Number(u.progress) || 0}%</small>
@@ -680,7 +680,11 @@ function viewDashboard(b) {
   </div>`;
 }
 
-const taskBtns = id => `<div class="tact"><button type="button" class="btn sm" data-act="task-open" data-id="${esc(id)}">${icon('file')}View task</button><button type="button" class="btn sm primary" data-act="task-update" data-id="${esc(id)}">${icon('edit')}Update task</button></div>`;
+const taskBtns = id => { const i = esc(id); return `<div class="tact tact4">
+  <button type="button" class="btn sm" data-act="task-open" data-id="${i}">View task</button>
+  <button type="button" class="btn sm" data-act="task-viewupd" data-id="${i}">View update</button>
+  <button type="button" class="btn sm" data-act="task-edit" data-id="${i}">Edit task</button>
+  <button type="button" class="btn sm primary" data-act="task-update" data-id="${i}">New update</button></div>`; };
 function taskRow(t) {
   const n = (t.attachments || []).length;
   const resp = respOf(t);
@@ -721,8 +725,9 @@ function viewTeams(b) {
         <div class="info"><h2>${esc(team.name)}</h2>
           ${virt ? `<div class="roles">Joint work — pick people from <b>any team</b> as responsible</div>` : `
           <div class="roles">Supervisor: <b>${esc(team.supervisor || '—')}</b> · Lead: <b>${esc(team.lead || '—')}</b></div>
-          <div class="members">${members(team).map(m => `<span class="member">${esc(m)}</span>`).join('')}</div>`}</div>
-        ${virt ? '' : `<button class="icon-btn" data-act="team-edit" data-id="${esc(team.id)}" title="Edit team">${icon('edit')}</button>`}
+          `}</div>
+        ${virt ? '' : `<button class="icon-btn" data-act="team-edit" data-id="${esc(team.id)}" title="Edit team">${icon('edit')}</button>
+        <div class="members">${members(team).map(m => `<span class="member">${esc(m)}</span>`).join('')}</div>`}
       </div>
       <div class="team-sum">${progressBar(s.avg, s.n && s.done === s.n)}<span><b>${s.avg}%</b> · ${s.done}/${s.n} done${s.over ? ` · <span style="color:var(--st-blocked)">${s.over} overdue</span>` : ''}</span></div>
       ${mine.length ? mine.map(taskRow).join('') : '<div class="empty" style="padding:22px">No tasks in this period.</div>'}
@@ -772,7 +777,7 @@ function viewTable(b) {
       <td class="nowrap">${fmtDate(t.endDate)} ${isOverdue(t) ? `<span class="tag over">${icon('alert')}</span>` : ''}</td>
       <td class="nowrap">${fmtDate(t.actualEnd)}</td><td>${pill(t.status)}</td>
       <td><div style="display:flex;gap:8px;align-items:center">${progressBar(t.progress, t.status === 'Completed')}<span class="mono">${clamp100(t.progress)}%</span></div></td>
-      <td style="min-width:200px">${esc(t.remarks || '—')}</td><td>${(t.attachments || []).length ? `<span class="tag">${icon('clip')}${t.attachments.length}</span>` : ''}</td><td class="nowrap">${taskBtns(t.id)}</td></tr>`; }).join('')
+      <td style="min-width:200px">${esc(t.remarks || '—')}</td><td>${(t.attachments || []).length ? `<span class="tag">${icon('clip')}${t.attachments.length}</span>` : ''}</td><td>${taskBtns(t.id)}</td></tr>`; }).join('')
       || '<tr><td colspan="13"><div class="empty">No matching tasks.</div></td></tr>'}</tbody></table></div>`;
 }
 
@@ -947,7 +952,7 @@ function blankTask(teamId) {
 function openTask(id, teamId, mode, reuse) {
   if (!reuse && !$('#drawer-root').children.length) pushLayer();
   const ex = id && taskById(id);
-  draft = { isNew: !ex, dirty: false, mode: ex && mode === 'update' ? 'update' : 'view', task: ex ? clone(ex) : blankTask(teamId) };
+  draft = { isNew: !ex, dirty: false, mode: ex && ['update', 'viewtask', 'viewupd'].includes(mode) ? mode : 'edit', task: ex ? clone(ex) : blankTask(teamId) };
   updDraft = { attachments: [] };
   $('#drawer-root').innerHTML = drawerHTML();
   if (!ex) { const t = $('#f-title'); if (t) t.focus(); }
@@ -981,11 +986,11 @@ function respChips(teamId, currentStr) {
 }
 const opt = (list, v) => list.map(x => `<option ${x === v ? 'selected' : ''}>${esc(x)}</option>`).join('');
 
-function activityList(taskId) {
+function activityList(taskId, ro) {
   const list = updatesFor(taskId);
   if (!list.length) return '<div class="muted">No updates posted yet.</div>';
   return '<h4 class="prev-h">Previous updates</h4>' + list.map((u, i) => `<div class="act"><div class="avatar">${esc(initials(u.user))}</div><div style="min-width:0;flex:1">
-    <div class="hd"><b>${fmtDate(uDate(u))}</b><span class="muted">by ${esc(u.user || 'Unknown')}</span>${pill(u.status)}<span class="tag">${clamp100(u.progress)}%</span>${i === 0 ? `<button type="button" class="btn sm" style="margin-left:auto" data-act="upd-edit" data-id="${esc(u.id)}">${icon('edit')}Edit last update</button>` : ''}</div>
+    <div class="hd"><b>${fmtDate(uDate(u))}</b><span class="muted">by ${esc(u.user || 'Unknown')}</span>${pill(u.status)}<span class="tag">${clamp100(u.progress)}%</span>${i === 0 && !ro ? `<button type="button" class="btn sm" style="margin-left:auto" data-act="upd-edit" data-id="${esc(u.id)}">${icon('edit')}Edit last update</button>` : ''}</div>
     ${u.note ? `<p>${esc(u.note)}</p>` : ''}
     ${(u.attachments || []).length ? `<div class="atts" style="margin-top:8px">${u.attachments.map((a, i) => attTile(a, i, 'log', false, u.id)).join('')}</div>` : ''}
     </div></div>`).join('') + '<div class="muted" style="font-size:12.5px;margin-top:8px">Showing updates from the last 30 days.</div>';
@@ -1033,14 +1038,42 @@ function updateBodyHTML(t) {
     <div id="act-list">${activityList(t.id)}</div></div>`;
 }
 
+const lastUpd = id => updatesFor(id)[0] || null;
+const kv = (k, v) => `<div class="kv"><small>${k}</small><div>${v}</div></div>`;
+function viewTaskHTML(t) {
+  const tm = allTeams().find(x => String(x.id) === String(t.teamId));
+  const resp = respOf(t), n = (t.attachments || []).length;
+  return `<div class="sec"><h3>Task details</h3>
+    <div class="ttitle" style="font-size:19px;margin-bottom:12px">${esc(t.title)}</div>
+    <div class="kvs">
+      ${kv('Team', esc(tm ? tm.name : '—'))}${kv('Status', pill(t.status))}
+      ${kv('Priority', esc(t.priority || 'Normal'))}${kv('Progress', `<div class="prog-ro">${progressBar(t.progress, t.status === 'Completed')}<b class="mono">${clamp100(t.progress)}%</b></div>`)}
+      ${kv('Start date', fmtDate(t.startDate) || '—')}${kv('Due date', `${fmtDate(t.endDate) || '—'} ${isOverdue(t) ? `<span class="tag over">${icon('alert')}Overdue</span>` : ''}`)}
+      ${kv('Actual end', fmtDate(t.actualEnd) || '—')}${kv('Days required', t.daysRequired === '' || t.daysRequired == null ? '—' : esc(t.daysRequired))}
+      ${kv('Drawing / reference', esc(t.drawing || '—'))}${kv('Responsible', esc(resp || '—'))}
+    </div>
+    ${kv('Description', `<div class="ro-text">${esc(t.description || '—')}</div>`)}
+    ${kv('Remarks', `<div class="ro-text">${esc(t.remarks || '—')}</div>`)}
+    ${t.updatedAt ? `<div class="muted" style="font-size:12.5px;margin-top:10px">Last changed ${esc(fmtDT(t.updatedAt))}${t.updatedBy ? ' by ' + esc(t.updatedBy) : ''}</div>` : ''}
+  </div>
+  <div class="sec"><h3>Drawings &amp; attachments${n ? ' (' + n + ')' : ''}</h3>${attGrid(t.attachments || [], false, 'task')}</div>`;
+}
+function viewUpdHTML(t) {
+  const list = updatesFor(t.id);
+  return `<div class="sec"><h3>Task</h3><div class="ttitle">${esc(t.title)}</div>
+      <div class="row" style="display:flex;gap:8px;align-items:center;margin-top:8px">${pill(t.status)}<b class="mono">${clamp100(t.progress)}%</b></div></div>
+    <div class="sec"><h3>Updates</h3>${list.length ? `<div id="trend">${trendHTML(t.id)}</div>` : ''}
+      <div id="act-list">${activityList(t.id, true)}</div></div>`;
+}
+
 function drawerHTML() {
-  const t = draft.task, resp = expandResp(t.responsibles, t.teamId), upd = draft.mode === 'update';
+  const t = draft.task, resp = expandResp(t.responsibles, t.teamId), upd = draft.mode === 'update', vt = draft.mode === 'viewtask', vu = draft.mode === 'viewupd', ro = vt || vu;
   return `<div class="backdrop" data-act="close-drawer"></div>
   <aside class="drawer" role="dialog" aria-label="Task details">
-    <header class="dr-head"><div><small>${draft.isNew ? 'NEW TASK' : (upd ? 'UPDATE TASK · ' : 'TASK · ') + esc(t.id)}</small><h2 id="dr-title">${esc(t.title || 'Untitled task')}</h2></div>
+    <header class="dr-head"><div><small>${draft.isNew ? 'NEW TASK' : (upd ? 'NEW UPDATE · ' : vt ? 'VIEW TASK · ' : vu ? 'VIEW UPDATES · ' : 'EDIT TASK · ') + esc(t.id)}</small><h2 id="dr-title">${esc(t.title || 'Untitled task')}</h2></div>
       <button class="icon-btn" data-act="close-drawer" aria-label="Close">${icon('x')}</button></header>
     <div class="dr-body" id="dr-body">
-      ${upd ? updateBodyHTML(t) : `<div class="sec" id="sec-details"><h3>Details</h3><div class="grid2">
+      ${vt ? viewTaskHTML(t) : vu ? viewUpdHTML(t) : upd ? updateBodyHTML(t) : `<div class="sec" id="sec-details"><h3>Details</h3><div class="grid2">
         <label class="fld span2">Task title *<input id="f-title" value="${esc(t.title)}"></label>
         <label class="fld">Team<select id="f-team">${allTeams().map(x => `<option value="${esc(x.id)}" ${String(x.id) === String(t.teamId) ? 'selected' : ''}>${esc(x.virtual ? 'Combined (people from all teams)' : x.name)}</option>`).join('')}</select></label>
         <label class="fld">Priority<select id="f-priority">${opt(PRIORITIES, t.priority)}</select></label>
@@ -1060,7 +1093,7 @@ function drawerHTML() {
         <div class="muted" style="margin-top:8px;font-size:12px">Click a file to preview it. Use the arrow on the file to download. Press <b>Save task</b> after attaching.</div></div>
       `}
     </div>
-    <footer class="dr-foot">${upd ? '<span class="sp"></span><button class="btn" data-act="close-drawer">Close</button>' : `${draft.isNew ? '' : `<button class="btn danger" data-act="task-delete">${icon('trash')}Delete</button>`}<span class="sp"></span>
+    <footer class="dr-foot">${vt ? '<button class="btn" data-act="close-drawer">Close</button><span class="sp"></span><button class="btn primary" data-act="to-edit">Edit task</button>' : vu ? `<button class="btn" data-act="close-drawer">Close</button><span class="sp"></span>${lastUpd(t.id) ? `<button class="btn" data-act="to-edit-last" data-id="${esc(lastUpd(t.id).id)}">Edit last update</button>` : ''}<button class="btn primary" data-act="to-update">New update</button>` : upd ? '<span class="sp"></span><button class="btn" data-act="close-drawer">Close</button>' : `${draft.isNew ? '' : `<button class="btn danger" data-act="task-delete">${icon('trash')}Delete</button>`}<span class="sp"></span>
       <button class="btn" data-act="close-drawer">Close</button><button class="btn primary" data-act="task-save">Save task</button>`}</footer>
   </aside>`;
 }
@@ -1328,10 +1361,15 @@ document.addEventListener('click', async e => {
     case 'clear-filters': state.filters = { q: '', team: '', status: '', overdue: false }; renderView(); break;
     case 'range': { const was = state.range; state.rangeOpen = d.p === 'custom'; setRange(d.p === 'custom' ? (was.preset === 'custom' ? was : Object.assign({ preset: 'custom' }, computeRange(was))) : { preset: d.p }); break; }
     case 'range-toggle': state.rangeOpen = !state.rangeOpen; renderView(true); break;
-    case 'sort': state.sort = { key: d.k, dir: state.sort.key === d.k ? -state.sort.dir : 1 }; renderBody(); break;
+    case 'sort': state.sort = { key: d.k, dir: state.sort.key === d.k ? -state.sort.dir : (d.k === 'startDate' ? -1 : 1) }; renderBody(); break;
     case 'open-team': state.filters.team = String(d.id); setView('teams'); window.scrollTo(0, 0); break;
-    case 'task-open': openTask(d.id, undefined, 'view'); break;
+    case 'task-open': openTask(d.id, undefined, 'viewtask'); break;
+    case 'task-viewupd': openTask(d.id, undefined, 'viewupd'); break;
+    case 'task-edit': openTask(d.id, undefined, 'edit'); break;
     case 'task-update': openTask(d.id, undefined, 'update'); break;
+    case 'to-edit': if (draft) openTask(draft.task.id, undefined, 'edit'); break;
+    case 'to-update': if (draft) openTask(draft.task.id, undefined, 'update'); break;
+    case 'to-edit-last': { if (!draft) break; const id = d.id; draft.mode = 'update'; startEditUpdate(id); break; }
     case 'upd-edit': startEditUpdate(d.id); break;
     case 'upd-cancel': stopEditUpdate(); break;
     case 'task-new': openTask(null, d.team); break;
