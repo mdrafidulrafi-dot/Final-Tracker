@@ -127,7 +127,7 @@ const state = {
   teams: [], tasks: [], updates: [],
   view: 'dashboard', loading: true, lastSync: null,
   filters: { q: '', team: '', status: '', overdue: false },
-  range: loadRange(), rangeOpen: false, bin: [],
+  range: loadRange(), rangeOpen: false, openT: {}, bin: [],
   sort: { key: 'startDate', dir: -1 }
 };
 const auth = { user: '', pw: '' };
@@ -627,6 +627,7 @@ function filtered() {
 }
 
 /* =============================== views =============================== */
+function gradBar(p) { p = clamp100(p); return `<div class="gbar"><i style="width:${p}%;background-size:${p ? (10000 / p).toFixed(1) : 100}% 100%"></i></div>`; }
 function progressBar(p, done) { return `<div class="bar ${done ? 'done' : ''}"><i style="width:${clamp100(p)}%"></i></div>`; }
 const pill = s => `<span class="pill st-${slug(s)}">${esc(s)}</span>`;
 
@@ -652,7 +653,7 @@ function viewDashboard(b) {
       <div class="card panel"><h3>Progress by team</h3>
         ${teamsWithWork().map(t => { const ts = stats(tasksOf(t.id)); return `
           <div class="team-prog" data-act="open-team" data-id="${esc(t.id)}">
-            <b>${esc(t.name)}</b>${progressBar(ts.avg, ts.n && ts.done === ts.n)}<span class="pct">${ts.avg}%</span></div>`; }).join('') || '<div class="muted">No teams yet.</div>'}
+            <div class="tp-name"><b>${esc(t.name)}</b><small>${ts.n} task${ts.n === 1 ? '' : 's'} · ${ts.done} done</small></div>${gradBar(ts.avg)}<span class="pct" style="color:hsl(${Math.round(clamp100(ts.avg) * 1.2)} 72% var(--pl))">${ts.avg}%</span></div>`; }).join('') || '<div class="muted">No teams yet.</div>'}
       </div>
       <div class="card panel"><h3>Needs attention</h3>
         <div class="att-list">${attention.length ? attention.map(t => { const tm = teamById(t.teamId); return `
@@ -719,22 +720,22 @@ function viewTeams(b) {
     if (filtersActive() && !mine.length && !(state.filters.team && !state.filters.q && !state.filters.status && !state.filters.overdue)) return '';
     const s = stats(tasksOf(team.id));
     const virt = !!team.virtual;
-    return `<section class="card team" id="team-${esc(team.id)}">
-      <div class="team-head">
+    const open = state.openT[team.id] !== undefined ? state.openT[team.id] : filtersActive();
+    return `<section class="card team ${open ? 'open' : ''}" id="team-${esc(team.id)}">
+      <div class="team-head" data-act="team-toggle" data-id="${esc(team.id)}" aria-expanded="${open}">
         <div class="badge">${virt ? '★' : esc(String(team.name).replace(/^team\s*/i, '').slice(0, 2).toUpperCase())}</div>
-        <div class="info"><h2>${esc(team.name)}</h2>
+        <div class="info"><h2>${esc(team.name)} <i class="car">▾</i></h2>
           ${virt ? `<div class="roles">Joint work — pick people from <b>any team</b> as responsible</div>` : `
           <div class="roles">Supervisor: <b>${esc(team.supervisor || '—')}</b> · Lead: <b>${esc(team.lead || '—')}</b></div>
           `}</div>
         ${virt ? '' : `<button class="icon-btn" data-act="team-edit" data-id="${esc(team.id)}" title="Edit team">${icon('edit')}</button>
         <div class="members">${members(team).map(m => `<span class="member">${esc(m)}</span>`).join('')}</div>`}
       </div>
-      <div class="team-sum">${progressBar(s.avg, s.n && s.done === s.n)}<span><b>${s.avg}%</b> · ${s.done}/${s.n} done${s.over ? ` · <span style="color:var(--st-blocked)">${s.over} overdue</span>` : ''}</span></div>
-      ${mine.length ? mine.map(taskRow).join('') : '<div class="empty" style="padding:22px">No tasks in this period.</div>'}
-      <div class="team-foot"><button class="btn sm" data-act="task-new" data-team="${esc(team.id)}">${icon('plus')}Add task</button></div>
+      <div class="team-sum">${progressBar(s.avg, s.n && s.done === s.n)}<span><b>${s.avg}%</b> · ${s.n} task${s.n === 1 ? '' : 's'} · ${s.done} done${s.over ? ` · <span style="color:var(--st-blocked)">${s.over} overdue</span>` : ''}</span></div>
+      ${open ? (mine.length ? mine.map(taskRow).join('') : '<div class="empty" style="padding:22px">No tasks in this period.</div>') + `<div class="team-foot"><button class="btn sm" data-act="task-new" data-team="${esc(team.id)}">${icon('plus')}Add task</button></div>` : ''}
     </section>`;
   }).join('');
-  b.innerHTML = cards ? `<div class="teams">${cards}</div>` : '<div class="card empty"><h3>No matching tasks</h3>Try another date range, or clear the filters.</div>';
+  b.innerHTML = cards ? `<div class="tbar"><button class="btn sm" data-act="teams-all" data-v="1">Expand all</button><button class="btn sm" data-act="teams-all" data-v="0">Collapse all</button></div><div class="teams">${cards}</div>` : '<div class="card empty"><h3>No matching tasks</h3>Try another date range, or clear the filters.</div>';
 }
 
 function viewProfile(b) {
@@ -1066,6 +1067,8 @@ function viewUpdHTML(t) {
       <div id="act-list">${activityList(t.id, true)}</div></div>`;
 }
 
+const dateFld = (label, id, val) => `<div class="fld"><label for="${id}">${label}</label><div class="dwrap"><input id="${id}" type="date" value="${esc(val)}"><button type="button" class="dclr" data-act="clear-date" data-for="${id}" aria-label="Clear ${label}">✕</button></div></div>`;
+
 function drawerHTML() {
   const t = draft.task, resp = expandResp(t.responsibles, t.teamId), upd = draft.mode === 'update', vt = draft.mode === 'viewtask', vu = draft.mode === 'viewupd', ro = vt || vu;
   return `<div class="backdrop" data-act="close-drawer"></div>
@@ -1083,9 +1086,9 @@ function drawerHTML() {
         <div class="chips span2" id="resp-chips">${respChips(t.teamId, resp)}</div>
         <label class="fld">Days required<input id="f-days" type="number" min="0" step="0.5" value="${esc(t.daysRequired)}"></label>
         <label class="fld">Status<select id="f-status">${opt(STATUSES, t.status)}</select></label>
-        <label class="fld">Start date<input id="f-start" type="date" value="${esc(t.startDate)}"></label>
-        <label class="fld">Due date<input id="f-end" type="date" value="${esc(t.endDate)}"></label>
-        <label class="fld">Actual end date<input id="f-actual" type="date" value="${esc(t.actualEnd)}"></label>
+        ${dateFld('Start date', 'f-start', t.startDate)}
+        ${dateFld('Due date', 'f-end', t.endDate)}
+        ${dateFld('Actual end date', 'f-actual', t.actualEnd)}
         <div class="fld">Progress (slider or type a number)${progressControl('f', t.progress)}</div>
         <label class="fld span2">Remarks<textarea id="f-remarks" rows="2">${esc(t.remarks)}</textarea></label>
       </div></div>
@@ -1294,14 +1297,21 @@ function applyTaskAutoRules(src) {
   if (src === 'progress') {
     const p = clamp100(v('#f-progress').value);
     if (p === 100 && v('#f-status').value !== 'Completed') { v('#f-status').value = 'Completed'; if (!v('#f-actual').value) v('#f-actual').value = todayISO(); }
+    else if (p < 100 && v('#f-status').value === 'Completed') { v('#f-status').value = p > 0 ? 'In Progress' : 'In Planning'; v('#f-actual').value = ''; }
     else if (p > 0 && p < 100 && v('#f-status').value === 'In Planning') v('#f-status').value = 'In Progress';
   } else if (src === 'status') {
     const s = v('#f-status').value;
     if (s === 'Completed') { setProg(100); if (!v('#f-actual').value) v('#f-actual').value = todayISO(); }
-    else if (s === 'In Planning') setProg(0);
+    else { v('#f-actual').value = ''; if (s === 'In Planning') setProg(0); else if (clamp100(v('#f-progress').value) === 100) setProg(90); }
   } else if (src === 'days' || src === 'start') {
     const days = Number(v('#f-days').value), st = v('#f-start').value;
     if (days > 0 && st) v('#f-end').value = addDays(st, Math.max(0, Math.ceil(days) - 1));
+    else if (src === 'start' && st && v('#f-end').value) backDays();
+  } else if (src === 'end') backDays();
+  function backDays() {
+    const st = v('#f-start').value, en = v('#f-end').value; if (!st || !en) return;
+    const n = Math.round((new Date(en + 'T00:00:00') - new Date(st + 'T00:00:00')) / 864e5) + 1;
+    if (n >= 1) v('#f-days').value = n;
   }
 }
 
@@ -1343,6 +1353,7 @@ document.addEventListener('change', e => {
   else if (id === 'rng-from' || id === 'rng-to') setRange({ preset: 'custom', from: $('#rng-from').value, to: $('#rng-to').value });
   else if (id === 'f-status') applyTaskAutoRules('status');
   else if (id === 'f-start') applyTaskAutoRules('start');
+  else if (id === 'f-end') applyTaskAutoRules('end');
   else if (id === 'f-team') { const c = $('#resp-chips'), r = $('#f-resp'); if (c) { r.value = expandResp(r.value, e.target.value); c.innerHTML = respChips(e.target.value, r.value); } }
   else if (id === 'f-progress-n' || id === 'u-progress-n') { e.target.value = clamp100(e.target.value); syncProgress(id[0], 'n'); }
   else if (id === 'u-status') { const s = e.target.value; if (s === 'Completed') { $('#u-progress').value = 100; $('#u-progress-n').value = 100; } else if (s === 'In Planning') { $('#u-progress').value = 0; $('#u-progress-n').value = 0; } }
@@ -1362,7 +1373,7 @@ document.addEventListener('click', async e => {
     case 'range': { const was = state.range; state.rangeOpen = d.p === 'custom'; setRange(d.p === 'custom' ? (was.preset === 'custom' ? was : Object.assign({ preset: 'custom' }, computeRange(was))) : { preset: d.p }); break; }
     case 'range-toggle': state.rangeOpen = !state.rangeOpen; renderView(true); break;
     case 'sort': state.sort = { key: d.k, dir: state.sort.key === d.k ? -state.sort.dir : (d.k === 'startDate' ? -1 : 1) }; renderBody(); break;
-    case 'open-team': state.filters.team = String(d.id); setView('teams'); window.scrollTo(0, 0); break;
+    case 'open-team': state.filters.team = String(d.id); state.openT = { [d.id]: true }; setView('teams'); window.scrollTo(0, 0); break;
     case 'task-open': openTask(d.id, undefined, 'viewtask'); break;
     case 'task-viewupd': openTask(d.id, undefined, 'viewupd'); break;
     case 'task-edit': openTask(d.id, undefined, 'edit'); break;
@@ -1373,6 +1384,9 @@ document.addEventListener('click', async e => {
     case 'upd-edit': startEditUpdate(d.id); break;
     case 'upd-cancel': stopEditUpdate(); break;
     case 'task-new': openTask(null, d.team); break;
+    case 'team-toggle': { const cur = state.openT[d.id] !== undefined ? state.openT[d.id] : filtersActive(); state.openT[d.id] = !cur; renderBody(); break; }
+    case 'teams-all': { state.openT = {}; boardTeams().forEach(t => { state.openT[t.id] = d.v === '1'; }); renderBody(); break; }
+    case 'clear-date': { const i = $('#' + d.for); if (i) { i.value = ''; if (draft) draft.dirty = true; } break; }
     case 'close-drawer': closeDrawer(); break;
     case 'task-save': saveTask(el); break;
     case 'task-delete': deleteTask(); break;

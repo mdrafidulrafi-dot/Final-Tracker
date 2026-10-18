@@ -414,3 +414,28 @@ td .tact4{grid-template-columns:repeat(2,auto);min-width:210px}
 .prog-ro{display:flex;align-items:center;gap:10px}
 .prog-ro .bar{flex:1}
 .sec>.kv{margin-top:10px}
+
+/* dashboard: progress by team */
+:root{--pl:36%}
+[data-theme=dark]{--pl:66%}
+.team-prog{grid-template-columns:130px 1fr 56px;padding:10px 0}
+.tp-name{min-width:0}
+.tp-name b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tp-name small{display:block;color:var(--muted);font-size:12.5px;font-weight:600}
+.gbar{height:14px;background:var(--surface2);border:1.5px solid var(--line);border-radius:99px;overflow:hidden}
+.gbar>i{display:block;height:100%;border-radius:99px;background-image:linear-gradient(90deg,#ef4444 0%,#f59e0b 35%,#eab308 55%,#22c55e 100%);background-repeat:no-repeat;transition:width .4s}
+.team-prog .pct{font-size:17px}
+@media (max-width:560px){.team-prog{grid-template-columns:104px 1fr 52px}}
+
+/* date fields with clear button */
+.dwrap{display:flex;gap:6px;align-items:stretch}
+.dwrap input{flex:1;min-width:0}
+.dclr{flex:none;width:46px;border:2px solid var(--line-strong);background:var(--surface);color:var(--ink2);border-radius:10px;font-size:16px;cursor:pointer}
+.dclr:hover{border-color:var(--st-blocked);color:var(--st-blocked)}
+/* collapsible team cards */
+.tbar{display:flex;gap:8px;margin-bottom:12px}
+.team-head{cursor:pointer}
+.team:not(.open) .team-head{border-bottom:0}
+.team:not(.open) .team-sum{border-bottom:0}
+.team-head h2 .car{font-size:15px;color:var(--muted)}
+.team.open .team-head h2 .car{transform:rotate(180deg)}
